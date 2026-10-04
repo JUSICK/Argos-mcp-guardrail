@@ -26,7 +26,7 @@
 ### 1. Build from source
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/Argos-mcp-guardrail.git](https://github.com/YOUR_USERNAME/Argos-mcp-guardrail.git)
+git clone [https://github.com/JUSICK/Argos-mcp-guardrail.git](https://github.com/JUSICK/Argos-mcp-guardrail.git)
 cd Argos-mcp-guardrail
 cargo build --release
 ```
