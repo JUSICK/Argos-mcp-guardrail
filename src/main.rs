@@ -74,7 +74,7 @@ impl Default for AuditConfig {
 
 fn default_true() -> bool { true }
 fn default_false() -> bool { false }
-fn default_log_file() -> String { "mcp-guard-audit.log".to_string() }
+fn default_log_file() -> String { "argos-audit.log".to_string() }
 fn default_blocked_patterns() -> Vec<String> {
     vec![
         ".env".into(),
@@ -106,7 +106,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     fn load() -> Self {
-        let config_path = Path::new("mcp-guard.toml");
+        let config_path = Path::new("argos.toml");
         if config_path.exists() {
             if let Ok(content) = fs::read_to_string(config_path) {
                 if let Ok(cfg) = toml::from_str::<AppConfig>(&content) {
@@ -147,7 +147,7 @@ impl JsonRpcErrorResponse {
             id,
             error: JsonRpcErrorObject {
                 code: -32003,
-                message: format!("[MCP-GUARD BLOCKED] {reason}"),
+                message: format!("[ARGOS BLOCKED] {reason}"),
             },
         }
     }
@@ -259,8 +259,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_args = match separator_pos {
         Some(pos) if pos + 1 < raw_args.len() => &raw_args[pos + 1..],
         _ => {
-            eprintln!("Usage: mcp-guard -- <command> [args...]");
-            eprintln!("Example: mcp-guard -- npx -y @modelcontextprotocol/server-filesystem /workspace");
+            eprintln!("Usage: argos -- <command> [args...]");
+            eprintln!("Example: argos -- npx -y @modelcontextprotocol/server-filesystem /workspace");
             std::process::exit(1);
         }
     };
@@ -349,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {}
 
         _ = tokio::signal::ctrl_c() => {
-            eprintln!("\n[mcp-guard] Interrupted. Shutting down gracefully...");
+            eprintln!("\n[argos] Interrupted. Shutting down gracefully...");
         }
     }
 

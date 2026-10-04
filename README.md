@@ -1,4 +1,4 @@
-# MCP Gateway (`mcp-gateway`)
+# Argos (`argos`)
 
 > A lightweight, zero-latency security shim & policy enforcement gateway for Model Context Protocol (MCP) servers.
 
@@ -6,18 +6,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Protocol: MCP](https://img.shields.io/badge/Protocol-MCP-green.svg)](https://modelcontextprotocol.io/)
 
-`mcp-gateway` acts as a transparent security pipe between AI clients (Claude Desktop, Cursor) and underlying MCP tool servers. Inspired by the zero-friction philosophy of Quad9/Pi-hole, it inspects raw JSON-RPC traffic on the fly and deterministically blocks unauthorized file access, path traversal attacks, and destructive commands before they reach your system.
+`argos` acts as a transparent security pipe between AI clients (Claude Desktop, Cursor) and underlying MCP tool servers. Inspired by the zero-friction philosophy of Quad9/Pi-hole, it inspects raw JSON-RPC traffic on the fly and deterministically blocks unauthorized file access, path traversal attacks, and destructive commands before they reach your system.
 
 ---
 
 ## Features
 
-- ** Sub-millisecond Overhead:** Built with pure Rust and Tokio asynchronous streams. Zero perceptible lag for the agent or developer.
-- ** Path Traversal Sandboxing:** Enforces strict workspace boundaries via OS path canonicalization and `../` stripping.
-- ** Secret & Sensitive File Shield:** Block access to `.env`, private keys (`id_rsa`, `id_ed25519`), and cloud credentials.
-- ** Destructive Command Blocker:** Intercepts dangerous terminal commands (`rm -rf`, disk formatters, fork bombs).
-- ** Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`mcp-guard-audit.log`) without cloud telemetry.
-- ** Flexible Configuration:** Declarative rule customization via `mcp-guard.toml`.
+- **Sub-millisecond Overhead:** Built with pure Rust and Tokio asynchronous streams. Zero perceptible lag for the agent or developer.
+- **Path Traversal Sandboxing:** Enforces strict workspace boundaries via OS path canonicalization and `../` stripping.
+- **Secret & Sensitive File Shield:** Block access to `.env`, private keys (`id_rsa`, `id_ed25519`), and cloud credentials.
+- **Destructive Command Blocker:** Intercepts dangerous terminal commands (`rm -rf`, disk formatters, fork bombs).
+- **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`mcp-guard-audit.log`) without cloud telemetry.
+- **Flexible Configuration:** Declarative rule customization via `mcp-guard.toml`.
 
 ---
 
@@ -26,14 +26,14 @@
 ### 1. Build from source
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/mcp-guard.git](https://github.com/YOUR_USERNAME/mcp-guard.git)
-cd mcp-guard
+git clone [https://github.com/YOUR_USERNAME/Argos-mcp-guardrail.git](https://github.com/YOUR_USERNAME/Argos-mcp-guardrail.git)
+cd Argos-mcp-guardrail
 cargo build --release
 ```
-The compiled binary will be located at target/release/mcp-gateway.
+The compiled binary will be located at target/release/argos-mcp-guardrail.
 
 
-### 2. Configure policies (mcp-guard.toml)
+### 2. Configure policies (argos-mcp-guardrail.toml)
 Create a mcp-guard.toml file in your workspace:
 
 ```[filesystem]

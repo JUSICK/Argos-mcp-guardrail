@@ -1,2 +1,0 @@
-{"timestamp":"2026-10-04T16:37:46.792986899+00:00","event_type":"BLOCKED","tool_name":"read_file","reason":"Pattern '.env' is prohibited by policy","arguments":{"path":".env"}}
-{"timestamp":"2026-10-04T16:38:45.005368378+00:00","event_type":"ALLOWED","tool_name":"read_file","reason":null,"arguments":{"path":".en"}}

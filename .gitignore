@@ -1,1 +1,24 @@
-/target
+
+/target/
+**/*.rs.bk
+*.d
+
+# Блокування конфігурацій середовища та секретів
+.env
+.env.*
+!.env.example
+
+# Логи роботи (щоб локальний аудит-лог не летів у Git)
+*.log
+argos-audit.log
+
+# Тимчасові файли ОС та редакторів
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Залишаємо Cargo.lock для бінарного проєкту (це рекомендована практика для binary crates)
+!Cargo.lock
