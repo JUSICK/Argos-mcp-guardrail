@@ -8,7 +8,7 @@ blocked_patterns = [
     "credentials",
     "secret"
 ]
-block_path_traversal = true
+block_path_traversal = false
 
 [commands]
 blocked_commands = [
