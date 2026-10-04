@@ -36,7 +36,8 @@ The compiled binary will be located at target/release/argos.
 ### 2. Configure policies (argos.toml)
 Create a argos.toml file in your workspace:
 
-```[filesystem]
+```bash
+[filesystem]
 blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials"]
 block_path_traversal = false
 
@@ -52,7 +53,8 @@ log_file = "argos-audit.log"
 ### 3. Integrate with Claude Desktop or Cursor
 Update your claude_desktop_config.json:
 
-```{
+```bash
+{
   "mcpServers": {
     "filesystem": {
       "command": "/path/to/argos",
@@ -70,7 +72,8 @@ Update your claude_desktop_config.json:
 
 ### 4. How it works:
 
-```[ AI Client (Claude / Cursor) ]
+```bash
+[ AI Client (Claude / Cursor) ]
               │
               │ stdin / stdout (JSON-RPC)
               ▼
