@@ -59,7 +59,7 @@ struct AuditConfig {
     #[serde(default = "default_log_file")]
     log_file: String,
     #[serde(default = "default_false")]
-    log_allowed: bool, // Додано поле, через яке виникала E0609
+    log_allowed: bool, 
 }
 
 impl Default for AuditConfig {
