@@ -1,0 +1,26 @@
+[filesystem]
+blocked_patterns = [
+    ".env",
+    ".ssh",
+    "id_rsa",
+    "id_ed25519",
+    "id_dsa",
+    "credentials",
+    "secret"
+]
+block_path_traversal = true
+
+[commands]
+blocked_commands = [
+    "rm -rf",
+    "mkfs",
+    ":(){ :|:& };:",
+    "dd if=",
+    "> /dev/sda",
+    "chmod -R 777"
+]
+
+[audit]
+enabled = true
+log_allowed = false
+log_file = "mcp-guard-audit.log"
