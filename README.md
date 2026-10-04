@@ -16,8 +16,8 @@
 - **Path Traversal Sandboxing:** Enforces strict workspace boundaries via OS path canonicalization and `../` stripping.
 - **Secret & Sensitive File Shield:** Block access to `.env`, private keys (`id_rsa`, `id_ed25519`), and cloud credentials.
 - **Destructive Command Blocker:** Intercepts dangerous terminal commands (`rm -rf`, disk formatters, fork bombs).
-- **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`mcp-guard-audit.log`) without cloud telemetry.
-- **Flexible Configuration:** Declarative rule customization via `mcp-guard.toml`.
+- **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`argos-audit.log`) without cloud telemetry.
+- **Flexible Configuration:** Declarative rule customization via `argos.toml`.
 
 ---
 
@@ -30,11 +30,11 @@ git clone [https://github.com/YOUR_USERNAME/Argos-mcp-guardrail.git](https://git
 cd Argos-mcp-guardrail
 cargo build --release
 ```
-The compiled binary will be located at target/release/argos-mcp-guardrail.
+The compiled binary will be located at target/release/argos.
 
 
-### 2. Configure policies (argos-mcp-guardrail.toml)
-Create a mcp-guard.toml file in your workspace:
+### 2. Configure policies (argos.toml)
+Create a argos.toml file in your workspace:
 
 ```[filesystem]
 blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials"]
@@ -46,7 +46,7 @@ blocked_commands = ["rm -rf", "mkfs", ":(){ :|:& };:", "chmod -R 777"]
 [audit]
 enabled = true
 log_allowed = false
-log_file = "mcp-guard-audit.log"
+log_file = "argos-audit.log"
 ```
 
 ### 3. Integrate with Claude Desktop or Cursor
@@ -55,7 +55,7 @@ Update your claude_desktop_config.json:
 ```{
   "mcpServers": {
     "filesystem": {
-      "command": "/path/to/mcp-gateway",
+      "command": "/path/to/argos",
       "args": [
         "--",
         "npx",
@@ -75,7 +75,7 @@ Update your claude_desktop_config.json:
               │ stdin / stdout (JSON-RPC)
               ▼
    ┌───────────────────────┐
-   │      mcp-gateway      │  <── Inspects tools/call in <0.2ms
+   │         argos         │  <── Inspects tools/call in <0.2ms
    └───────────────────────┘
          │           │
    (If Allowed)  (If Blocked) ──> Returns JSON-RPC Error & logs event
