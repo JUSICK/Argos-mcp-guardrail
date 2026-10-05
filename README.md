@@ -1,6 +1,6 @@
 # Argos (`argos`)
 
-> A lightweight, zero-latency security shim & policy enforcement gateway for Model Context Protocol (MCP) servers.
+> Zero-overhead policy enforcement gateway and runtime guardrail for Model Context Protocol (MCP) servers.
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -18,7 +18,7 @@
 - **Destructive Command Blocker:** Intercepts dangerous terminal commands (`rm -rf`, disk formatters, fork bombs).
 - **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`argos-audit.log`) without cloud telemetry.
 - **Flexible Configuration:** Declarative rule customization via `argos.toml`.
-
+- **Your Own Local & Private Tool**: Built entirely in Rust as a self-contained, ~1 MB single binary with zero external telemetry or cloud dependencies. Argos relies strictly on deterministic pattern matching, native OS primitives, and JSON-RPC stream interception—ensuring your sensitive code, configuration keys, and audit trails never leave your local machine.
 ---
 
 ![alt text](image.png)
