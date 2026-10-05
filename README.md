@@ -10,7 +10,7 @@
 
 ---
 
-![alt text](image.png)
+<img width="1734" height="875" alt="image" src="https://github.com/user-attachments/assets/3554e752-14a8-4893-b7af-f4f81800e170" />
 
 ---
 
