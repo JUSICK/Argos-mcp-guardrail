@@ -10,6 +10,10 @@
 
 ---
 
+![alt text](image.png)
+
+---
+
 ## Features
 
 - **Sub-millisecond Overhead:** Built with pure Rust and Tokio asynchronous streams. Zero perceptible lag for the agent or developer.
@@ -19,10 +23,6 @@
 - **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`argos-audit.log`) without cloud telemetry.
 - **Flexible Configuration:** Declarative rule customization via `argos.toml`.
 - **Your Own Local & Private Tool**: Built entirely in Rust as a self-contained, ~1 MB single binary with zero external telemetry or cloud dependencies. Argos relies strictly on deterministic pattern matching, native OS primitives, and JSON-RPC stream interception—ensuring your sensitive code, configuration keys, and audit trails never leave your local machine.
----
-
-![alt text](image.png)
-
 ---
 
 ## Quick Start
