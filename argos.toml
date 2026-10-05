@@ -1,26 +1,20 @@
 [filesystem]
-blocked_patterns = [
-    ".env",
-    ".ssh",
-    "id_rsa",
-    "id_ed25519",
-    "id_dsa",
-    "credentials",
-    "secret"
-]
-block_path_traversal = false
+block_path_traversal = true
+
+blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials"]
+
+allowed_patterns = [".env.example", ".env.sample", ".env.template"]
 
 [commands]
 blocked_commands = [
-    "rm -rf",
-    "mkfs",
-    ":(){ :|:& };:",
-    "dd if=",
-    "> /dev/sda",
-    "chmod -R 777"
+  "rm -rf",
+  "mkfs",
+  ":(){ :|:& };:",
+  "chmod -R 777",
+  "dd if="
 ]
 
 [audit]
 enabled = true
 log_allowed = false
-log_file = "mcp-guard-audit.log"
+log_file = "argos-audit.log"

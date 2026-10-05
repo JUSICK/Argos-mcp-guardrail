@@ -25,6 +25,8 @@ struct AppConfig {
 struct FilesystemConfig {
     #[serde(default = "default_blocked_patterns")]
     blocked_patterns: Vec<String>,
+    #[serde(default = "default_allowed_patterns")]
+    allowed_patterns: Vec<String>,
     #[serde(default = "default_true")]
     block_path_traversal: bool,
 }
@@ -33,6 +35,7 @@ impl Default for FilesystemConfig {
     fn default() -> Self {
         Self {
             blocked_patterns: default_blocked_patterns(),
+            allowed_patterns: default_allowed_patterns(),
             block_path_traversal: true,
         }
     }
@@ -72,6 +75,7 @@ impl Default for AuditConfig {
     }
 }
 
+
 fn default_true() -> bool { true }
 fn default_false() -> bool { false }
 fn default_log_file() -> String { "argos-audit.log".to_string() }
@@ -82,6 +86,13 @@ fn default_blocked_patterns() -> Vec<String> {
         "id_rsa".into(),
         "id_ed25519".into(),
         "credentials".into(),
+    ]
+}
+fn default_allowed_patterns() -> Vec<String> {
+    vec![
+        ".env.example".into(),
+        ".env.sample".into(),
+        ".env.template".into(),
     ]
 }
 fn default_blocked_commands() -> Vec<String> {
@@ -106,7 +117,12 @@ impl Default for AppConfig {
 
 impl AppConfig {
     fn load() -> Self {
-        let config_path = Path::new("argos.toml");
+        let base_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let config_path = base_dir.join("argos.toml");
         if config_path.exists() {
             if let Ok(content) = fs::read_to_string(config_path) {
                 if let Ok(cfg) = toml::from_str::<AppConfig>(&content) {
@@ -128,30 +144,43 @@ struct JsonRpcRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct JsonRpcErrorResponse {
-    jsonrpc: &'static str,
-    id: Option<Value>,
-    error: JsonRpcErrorObject,
+struct McpContent {
+    #[serde(rename = "type")]
+    content_type: &'static str,
+    text: String,
 }
 
 #[derive(Debug, Serialize)]
-struct JsonRpcErrorObject {
-    code: i32,
-    message: String,
+struct McpToolResult {
+    content: Vec<McpContent>,
+    #[serde(rename = "isError")]
+    is_error: bool,
 }
 
-impl JsonRpcErrorResponse {
+#[derive(Debug, Serialize)]
+struct JsonRpcSuccessResponse {
+    jsonrpc: &'static str,
+    id: Option<Value>,
+    result: McpToolResult,
+}
+
+impl JsonRpcSuccessResponse {
     fn blocked(id: Option<Value>, reason: &str) -> Self {
         Self {
             jsonrpc: "2.0",
             id,
-            error: JsonRpcErrorObject {
-                code: -32003,
-                message: format!("[ARGOS BLOCKED] {reason}"),
+            result: McpToolResult {
+                content: vec![McpContent {
+                    content_type: "text",
+                    text: format!("[SECURITY POLICY VIOLATION] Action rejected by Argos Gateway: {reason}"),
+                }],
+                is_error: true, 
             },
         }
     }
 }
+
+
 
 #[derive(Debug, Serialize)]
 struct AuditEvent {
@@ -173,11 +202,10 @@ struct SecurityEngine {
 }
 
 impl SecurityEngine {
-    fn new(config: AppConfig) -> Self {
-        let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    fn new(config: AppConfig, workspace_root: PathBuf) -> Self {
         Self {
             config,
-            workspace_root: current_dir,
+            workspace_root,
         }
     }
 
@@ -187,11 +215,20 @@ impl SecurityEngine {
             None => String::new(),
         };
 
-        for pattern in &self.config.filesystem.blocked_patterns {
-            if args_str.contains(pattern) {
-                return PolicyDecision::Block(format!(
-                    "Pattern '{pattern}' is prohibited by policy"
-                ));
+        let is_explicitly_allowed = self
+            .config
+            .filesystem
+            .allowed_patterns
+            .iter()
+            .any(|allowed| args_str.contains(allowed));
+
+        if !is_explicitly_allowed {
+            for pattern in &self.config.filesystem.blocked_patterns {
+                if args_str.contains(pattern) {
+                    return PolicyDecision::Block(format!(
+                        "Pattern '{pattern}' is prohibited by policy"
+                    ));
+                }
             }
         }
 
@@ -203,14 +240,14 @@ impl SecurityEngine {
             if let Some(Value::Object(map)) = args {
                 if let Some(Value::String(path_val)) = map.get("path") {
                     let candidate = PathBuf::from(path_val);
-                    let full_path = if candidate.is_relative() {
-                        self.workspace_root.join(candidate)
-                    } else {
-                        candidate
-                    };
+                    if let (Ok(can_candidate), Ok(can_root)) = (candidate.canonicalize(), self.workspace_root.canonicalize()) {
+                        let cand_str = can_candidate.to_string_lossy();
+                        let root_str = can_root.to_string_lossy();
 
-                    if let Ok(canonical) = full_path.canonicalize() {
-                        if !canonical.starts_with(&self.workspace_root) {
+                        let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
+                        let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
+
+                        if !clean_candidate.starts_with(clean_root) {
                             return PolicyDecision::Block(format!(
                                 "Resolved path '{path_val}' escapes workspace root"
                             ));
@@ -238,11 +275,22 @@ impl SecurityEngine {
             return;
         }
 
+        let base_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let log_path = if Path::new(&self.config.audit.log_file).is_absolute() {
+            PathBuf::from(&self.config.audit.log_file)
+        } else {
+            base_dir.join(&self.config.audit.log_file)
+        };
+
         if let Ok(serialized) = serde_json::to_string(&event) {
             if let Ok(mut file) = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&self.config.audit.log_file)
+                .open(&log_path)
                 .await
             {
                 let _ = file.write_all(format!("{serialized}\n").as_bytes()).await;
@@ -269,10 +317,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd_args = &target_args[1..];
 
     let config = AppConfig::load();
-    let engine = SecurityEngine::new(config);
 
-    let mut child = Command::new(program)
-        .args(cmd_args)
+    let target_workspace = target_args
+        .iter()
+        .rev()
+        .find(|arg| Path::new(arg).is_dir())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let engine = SecurityEngine::new(config, target_workspace);
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/c").arg(program).args(cmd_args);
+        c
+    } else {
+        let mut c = Command::new(program);
+        c.args(cmd_args);
+        c
+    };
+
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -319,8 +384,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     arguments: args,
                                 }).await;
 
-                                let error_reply = JsonRpcErrorResponse::blocked(rpc.id, &reason);
-                                let json_bytes = serde_json::to_vec(&error_reply).unwrap();
+                                let blocked_reply = JsonRpcSuccessResponse::blocked(rpc.id, &reason);
+                                let json_bytes = serde_json::to_vec(&blocked_reply).unwrap();
                                 let mut out = io::stdout();
                                 let _ = out.write_all(&json_bytes).await;
                                 let _ = out.write_all(b"\n").await;
