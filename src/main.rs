@@ -86,6 +86,9 @@ fn default_blocked_patterns() -> Vec<String> {
         "id_rsa".into(),
         "id_ed25519".into(),
         "credentials".into(),
+        ".npmrc".into(),
+        ".aws".into(),
+        ".git-credentials".into(),
     ]
 }
 fn default_allowed_patterns() -> Vec<String> {
@@ -215,6 +218,58 @@ impl SecurityEngine {
             None => String::new(),
         };
 
+        if let Some(Value::Object(map)) = args {
+            let target_path_str = map
+                .get("path")
+                .or_else(|| map.get("uri"))
+                .and_then(|v| v.as_str());
+
+            if let Some(path_val) = target_path_str {
+                if self.config.filesystem.block_path_traversal
+                    && (path_val.contains("../") || path_val.contains("..\\"))
+                {
+                    return PolicyDecision::Block("Explicit path traversal ('../') attempt detected".into());
+                }
+
+                let candidate = PathBuf::from(path_val);
+
+                if let Ok(can_candidate) = candidate.canonicalize() {
+                    let cand_str = can_candidate.to_string_lossy();
+                    let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
+
+                    if self.config.filesystem.block_path_traversal {
+                        if let Ok(can_root) = self.workspace_root.canonicalize() {
+                            let root_str = can_root.to_string_lossy();
+                            let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
+
+                            if !clean_candidate.starts_with(clean_root) {
+                                return PolicyDecision::Block(format!(
+                                    "Resolved target path escapes workspace boundary: {clean_candidate}"
+                                ));
+                            }
+                        }
+                    }
+
+                    let is_explicitly_allowed = self
+                        .config
+                        .filesystem
+                        .allowed_patterns
+                        .iter()
+                        .any(|allowed| clean_candidate.contains(allowed));
+
+                    if !is_explicitly_allowed {
+                        for pattern in &self.config.filesystem.blocked_patterns {
+                            if clean_candidate.contains(pattern) {
+                                return PolicyDecision::Block(format!(
+                                    "Resolved target matches prohibited pattern '{pattern}'"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let is_explicitly_allowed = self
             .config
             .filesystem
@@ -226,33 +281,8 @@ impl SecurityEngine {
             for pattern in &self.config.filesystem.blocked_patterns {
                 if args_str.contains(pattern) {
                     return PolicyDecision::Block(format!(
-                        "Pattern '{pattern}' is prohibited by policy"
+                        "Argument payload contains prohibited pattern '{pattern}'"
                     ));
-                }
-            }
-        }
-
-        if self.config.filesystem.block_path_traversal {
-            if args_str.contains("../") || args_str.contains("..\\") {
-                return PolicyDecision::Block("Path traversal ('../') attempt detected".into());
-            }
-
-            if let Some(Value::Object(map)) = args {
-                if let Some(Value::String(path_val)) = map.get("path") {
-                    let candidate = PathBuf::from(path_val);
-                    if let (Ok(can_candidate), Ok(can_root)) = (candidate.canonicalize(), self.workspace_root.canonicalize()) {
-                        let cand_str = can_candidate.to_string_lossy();
-                        let root_str = can_root.to_string_lossy();
-
-                        let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
-                        let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
-
-                        if !clean_candidate.starts_with(clean_root) {
-                            return PolicyDecision::Block(format!(
-                                "Resolved path '{path_val}' escapes workspace root"
-                            ));
-                        }
-                    }
                 }
             }
         }

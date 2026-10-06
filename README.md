@@ -59,7 +59,7 @@ Create and place `argos.toml` next to the argos executable or in your workspace 
 block_path_traversal = true
 
 # Block access to sensitive files and credentials
-blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials"]
+blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials", ".aws", ".npmrc"]
 
 # Explicit exceptions allowed through the policy
 allowed_patterns = [".env.example", ".env.sample", ".env.template"]
