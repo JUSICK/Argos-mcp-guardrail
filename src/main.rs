@@ -454,15 +454,51 @@ fn resolve_program(program: &str) -> String {
     program.to_string()
 }
 
+fn resolve_workspace(argos_args: &[String], target_args: &[String]) -> Result<PathBuf, String> {
+    let workspace = match argos_args {
+        [] => target_args
+            .iter()
+            .rev()
+            .find(|arg| Path::new(arg).is_dir())
+            .map(PathBuf::from)
+            .ok_or(
+                "no workspace directory found in the server arguments; pass --workspace <dir>",
+            )?,
+        [flag, dir] if flag == "--workspace" => {
+            let p = PathBuf::from(dir);
+            if !p.is_dir() {
+                return Err(format!("--workspace {dir} is not an existing directory"));
+            }
+            p
+        }
+        _ => {
+            return Err(format!(
+                "unrecognized arguments before '--': {}",
+                argos_args.join(" ")
+            ))
+        }
+    };
+    let canonical = workspace
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve workspace {}: {e}", workspace.display()))?;
+    if canonical.parent().is_none() {
+        return Err(format!(
+            "refusing to use filesystem root {} as the workspace",
+            workspace.display()
+        ));
+    }
+    Ok(workspace)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_args: Vec<String> = env::args().collect();
     let separator_pos = raw_args.iter().position(|r| r == "--");
 
-    let target_args = match separator_pos {
-        Some(pos) if pos + 1 < raw_args.len() => &raw_args[pos + 1..],
+    let (argos_args, target_args) = match separator_pos {
+        Some(pos) if pos + 1 < raw_args.len() => (&raw_args[1..pos], &raw_args[pos + 1..]),
         _ => {
-            eprintln!("Usage: argos -- <command> [args...]");
+            eprintln!("Usage: argos [--workspace <dir>] -- <command> [args...]");
             eprintln!(
                 "Example: argos -- npx -y @modelcontextprotocol/server-filesystem /workspace"
             );
@@ -478,12 +514,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
-    let target_workspace = target_args
-        .iter()
-        .rev()
-        .find(|arg| Path::new(arg).is_dir())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let target_workspace = resolve_workspace(argos_args, target_args).unwrap_or_else(|e| {
+        eprintln!("[argos] {e}");
+        std::process::exit(1);
+    });
+    eprintln!("[argos] workspace root: {}", target_workspace.display());
 
     let engine = SecurityEngine::new(config, target_workspace);
 
@@ -662,6 +697,81 @@ mod tests {
             !check(&ws, "list_directory", &ws),
             "the workspace root itself was blocked"
         );
+    }
+
+    fn strs(items: &[&Path]) -> Vec<String> {
+        items
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn explicit_workspace_overrides_dir_in_server_args() {
+        let (ws, outside) = setup("ws-explicit");
+        let argos = vec!["--workspace".to_string(), ws.to_string_lossy().into_owned()];
+        let mut target = vec!["npx".to_string(), "server-filesystem".to_string()];
+        target.extend(strs(&[&outside]));
+        assert_eq!(resolve_workspace(&argos, &target), Ok(ws));
+    }
+
+    #[test]
+    fn refuses_when_no_workspace_can_be_found() {
+        let target = vec![
+            "npx".to_string(),
+            "@modelcontextprotocol/server-memory".to_string(),
+        ];
+        assert!(
+            resolve_workspace(&[], &target).is_err(),
+            "no directory argument silently fell back to some other directory"
+        );
+    }
+
+    #[test]
+    fn rejects_nonexistent_explicit_workspace() {
+        let (ws, _) = setup("ws-missing");
+        let argos = vec![
+            "--workspace".to_string(),
+            ws.join("nope").to_string_lossy().into_owned(),
+        ];
+        let mut target = vec!["npx".to_string()];
+        target.extend(strs(&[&ws]));
+        assert!(
+            resolve_workspace(&argos, &target).is_err(),
+            "nonexistent --workspace was accepted"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_argos_flag() {
+        let (ws, _) = setup("ws-badflag");
+        let argos = vec!["--wrkspace".to_string(), ws.to_string_lossy().into_owned()];
+        let mut target = vec!["npx".to_string()];
+        target.extend(strs(&[&ws]));
+        assert!(
+            resolve_workspace(&argos, &target).is_err(),
+            "misspelled --workspace flag was silently ignored"
+        );
+    }
+
+    #[test]
+    fn rejects_filesystem_root_as_workspace() {
+        let (ws, _) = setup("ws-root");
+        let root = ws.ancestors().last().unwrap().to_path_buf();
+        let mut target = vec!["npx".to_string()];
+        target.extend(strs(&[&root]));
+        assert!(
+            resolve_workspace(&[], &target).is_err(),
+            "filesystem root was accepted as the workspace"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_last_dir_arg() {
+        let (ws, outside) = setup("ws-fallback");
+        let mut target = vec!["npx".to_string(), "server-filesystem".to_string()];
+        target.extend(strs(&[&outside, &ws]));
+        assert_eq!(resolve_workspace(&[], &target), Ok(ws));
     }
 
     fn write_config(name: &str, body: &str) -> PathBuf {

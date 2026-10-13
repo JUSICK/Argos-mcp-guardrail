@@ -106,6 +106,8 @@ Update your `claude_desktop_config.json`:
       "Argos": {
         "command": "C:\\path\\to\\argos.exe",
         "args": [
+          "--workspace",
+          "C:\\Users\\username\\projects\\my-workspace",
           "--",
           "npx.cmd",
           "-y",
@@ -124,6 +126,8 @@ Update your `claude_desktop_config.json`:
       "Argos": {
         "command": "/usr/local/bin/argos",
         "args": [
+          "--workspace",
+          "/Users/username/projects/my-workspace",
           "--",
           "npx",
           "-y",
@@ -134,6 +138,8 @@ Update your `claude_desktop_config.json`:
     }
   }
   ```
+
+`--workspace` sets the directory Argos treats as the sandbox boundary. If you leave it out, Argos uses the last argument after `--` that is an existing directory, and refuses to start if there is none or if it is a filesystem root (`/`, `C:\`). The chosen root is printed to stderr on startup.
 
 Restart Claude Desktop, and Argos will actively guard your tool calls against unauthorized filesystem traversal and credential exposure.
 
