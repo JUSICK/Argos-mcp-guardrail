@@ -259,6 +259,34 @@ fn resolve_path(raw: &Path) -> Option<PathBuf> {
     }
 }
 
+fn normalize_command(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn collect_command_texts(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(normalize_command(s)),
+        Value::Array(items) => {
+            let words: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
+            if !words.is_empty() {
+                out.push(normalize_command(&words.join(" ")));
+            }
+            for item in items {
+                collect_command_texts(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values() {
+                collect_command_texts(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 struct SecurityEngine {
     config: AppConfig,
     workspace_root: PathBuf,
@@ -352,8 +380,13 @@ impl SecurityEngine {
 
         let commands = &self.config.commands;
         if commands.check_all_tools || commands.shell_tools.iter().any(|t| t == tool_name) {
+            let mut texts = Vec::new();
+            if let Some(v) = args {
+                collect_command_texts(v, &mut texts);
+            }
             for cmd in &commands.blocked_commands {
-                if args_str.contains(cmd) {
+                let wanted = normalize_command(cmd);
+                if texts.iter().any(|t| t.contains(&wanted)) {
                     return PolicyDecision::Block(format!(
                         "Forbidden command sequence '{cmd}' detected"
                     ));
@@ -975,5 +1008,56 @@ mod tests {
             !check(&ws, "write_file", &target),
             ".ENV.EXAMPLE was blocked"
         );
+    }
+
+    #[test]
+    fn blocks_rm_with_extra_spaces() {
+        let (ws, _) = setup("case5a");
+        let args = json!({ "command": "rm  -rf /" });
+        assert!(
+            check_args(&ws, "bash", args),
+            "rm with two spaces was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_rm_with_tab() {
+        let (ws, _) = setup("case5b");
+        let args = json!({ "command": "rm\t-rf /" });
+        assert!(check_args(&ws, "bash", args), "rm with a tab was allowed");
+    }
+
+    #[test]
+    fn blocks_rm_with_uppercase_flag() {
+        let (ws, _) = setup("case5c");
+        let args = json!({ "command": "rm -Rf /" });
+        assert!(check_args(&ws, "bash", args), "rm -Rf was allowed");
+    }
+
+    #[test]
+    fn blocks_rm_split_across_argv_list() {
+        let (ws, _) = setup("case5d");
+        let args = json!({ "argv": ["rm", "-rf", "/"] });
+        assert!(
+            check_args(&ws, "exec", args),
+            "rm -rf as an argv list was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_chmod_with_extra_spaces() {
+        let (ws, _) = setup("case5e");
+        let args = json!({ "command": "chmod  -R  777 /" });
+        assert!(
+            check_args(&ws, "bash", args),
+            "chmod with extra spaces was allowed"
+        );
+    }
+
+    #[test]
+    fn allows_harmless_command_with_tab() {
+        let (ws, _) = setup("case5f");
+        let args = json!({ "command": "ls\t-la" });
+        assert!(!check_args(&ws, "bash", args), "ls with a tab was blocked");
     }
 }
