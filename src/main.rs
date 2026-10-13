@@ -329,6 +329,35 @@ impl SecurityEngine {
     }
 }
 
+// On Windows, resolve the program to a full path using PATH + PATHEXT so it can be
+// spawned directly. This avoids `cmd /c`, where cmd.exe would interpret metacharacters
+// in the args. `.cmd`/`.bat` targets still go through cmd internally, but Rust's std
+// rejects arguments it can't escape safely for those, instead of passing them through.
+fn resolve_program(program: &str) -> String {
+    if !cfg!(windows) {
+        return program.to_string();
+    }
+    let path_var = match env::var_os("PATH") {
+        Some(p) => p,
+        None => return program.to_string(),
+    };
+    let exts = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let exts: Vec<&str> = exts.split(';').filter(|e| !e.is_empty()).collect();
+    for dir in env::split_paths(&path_var) {
+        let exact = dir.join(program);
+        if exact.is_file() {
+            return exact.to_string_lossy().into_owned();
+        }
+        for ext in &exts {
+            let candidate = dir.join(format!("{program}{ext}"));
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    program.to_string()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_args: Vec<String> = env::args().collect();
@@ -357,15 +386,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let engine = SecurityEngine::new(config, target_workspace);
 
-    let mut cmd = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/c").arg(program).args(cmd_args);
-        c
-    } else {
-        let mut c = Command::new(program);
-        c.args(cmd_args);
-        c
-    };
+    let mut cmd = Command::new(resolve_program(program));
+    cmd.args(cmd_args);
 
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -453,3 +475,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
