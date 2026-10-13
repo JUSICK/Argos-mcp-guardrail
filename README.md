@@ -84,7 +84,8 @@ blocked_commands = [
   "mkfs",
   ":(){ :|:& };:",
   "chmod -R 777",
-  "dd if="
+  "dd if=",
+  "rm -fr"
 ]
 
 [audit]

@@ -137,6 +137,7 @@ fn default_blocked_commands() -> Vec<String> {
         ":(){ :|:& };:".into(),
         "dd if=".into(),
         "chmod -R 777".into(),
+        "rm -fr".into(),
     ]
 }
 fn default_shell_tools() -> Vec<String> {
