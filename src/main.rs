@@ -12,6 +12,7 @@ use tokio::process::Command;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 struct AppConfig {
     #[serde(default)]
     filesystem: FilesystemConfig,
@@ -22,6 +23,7 @@ struct AppConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct FilesystemConfig {
     #[serde(default = "default_blocked_patterns")]
     blocked_patterns: Vec<String>,
@@ -45,6 +47,7 @@ impl Default for FilesystemConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct CommandsConfig {
     #[serde(default = "default_blocked_commands")]
     blocked_commands: Vec<String>,
@@ -65,6 +68,7 @@ impl Default for CommandsConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct AuditConfig {
     #[serde(default = "default_true")]
     enabled: bool,
@@ -156,21 +160,22 @@ fn default_shell_tools() -> Vec<String> {
 }
 
 impl AppConfig {
-    fn load() -> Self {
+    fn load() -> Result<Self, String> {
         let base_dir = env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let config_path = base_dir.join("argos.toml");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                if let Ok(cfg) = toml::from_str::<AppConfig>(&content) {
-                    return cfg;
-                }
-            }
+        Self::load_from(&base_dir.join("argos.toml"))
+    }
+
+    fn load_from(path: &Path) -> Result<Self, String> {
+        if !path.exists() {
+            return Ok(AppConfig::default());
         }
-        AppConfig::default()
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        toml::from_str(&content).map_err(|e| format!("invalid {}: {e}", path.display()))
     }
 }
 
@@ -468,7 +473,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let program = &target_args[0];
     let cmd_args = &target_args[1..];
 
-    let config = AppConfig::load();
+    let config = AppConfig::load().unwrap_or_else(|e| {
+        eprintln!("[argos] {e}");
+        std::process::exit(1);
+    });
 
     let target_workspace = target_args
         .iter()
@@ -653,6 +661,65 @@ mod tests {
         assert!(
             !check(&ws, "list_directory", &ws),
             "the workspace root itself was blocked"
+        );
+    }
+
+    fn write_config(name: &str, body: &str) -> PathBuf {
+        let (ws, _) = setup(name);
+        let p = ws.join("argos.toml");
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn rejects_config_with_syntax_error() {
+        let p = write_config(
+            "cfg-syntax",
+            "[filesystem]\nblocked_patterns = [\"secret\" \"prod.key\"]\n",
+        );
+        assert!(
+            AppConfig::load_from(&p).is_err(),
+            "broken TOML was silently accepted"
+        );
+    }
+
+    #[test]
+    fn rejects_config_with_misspelled_key() {
+        let p = write_config("cfg-key", "[filesystem]\nblocked_paterns = [\"secret\"]\n");
+        assert!(
+            AppConfig::load_from(&p).is_err(),
+            "misspelled key was silently ignored"
+        );
+    }
+
+    #[test]
+    fn rejects_config_with_misspelled_section() {
+        let p = write_config(
+            "cfg-section",
+            "[filesytem]\nblocked_patterns = [\"secret\"]\n",
+        );
+        assert!(
+            AppConfig::load_from(&p).is_err(),
+            "misspelled section was silently ignored"
+        );
+    }
+
+    #[test]
+    fn loads_valid_custom_config() {
+        let p = write_config(
+            "cfg-valid",
+            "[filesystem]\nblocked_patterns = [\"secret\"]\n",
+        );
+        let cfg = AppConfig::load_from(&p).expect("valid config was rejected");
+        assert_eq!(cfg.filesystem.blocked_patterns, vec!["secret".to_string()]);
+    }
+
+    #[test]
+    fn missing_config_uses_defaults() {
+        let (ws, _) = setup("cfg-missing");
+        assert!(
+            AppConfig::load_from(&ws.join("argos.toml")).is_ok(),
+            "missing config should fall back to defaults"
         );
     }
 

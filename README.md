@@ -51,7 +51,7 @@ The compiled binary will be located at:
 
 
 ### 2. Configure policies (argos.toml)
-Create and place `argos.toml` next to the argos executable or in your workspace root:
+Create and place `argos.toml` next to the argos executable:
 
 ```bash
 [filesystem]
