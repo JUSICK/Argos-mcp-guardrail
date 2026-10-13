@@ -45,12 +45,18 @@ impl Default for FilesystemConfig {
 struct CommandsConfig {
     #[serde(default = "default_blocked_commands")]
     blocked_commands: Vec<String>,
+    #[serde(default = "default_true")]
+    check_all_tools: bool,
+    #[serde(default = "default_shell_tools")]
+    shell_tools: Vec<String>,
 }
 
 impl Default for CommandsConfig {
     fn default() -> Self {
         Self {
             blocked_commands: default_blocked_commands(),
+            check_all_tools: true,
+            shell_tools: default_shell_tools(),
         }
     }
 }
@@ -110,6 +116,20 @@ fn default_blocked_commands() -> Vec<String> {
         ":(){ :|:& };:".into(),
         "dd if=".into(),
         "chmod -R 777".into(),
+    ]
+}
+fn default_shell_tools() -> Vec<String> {
+    vec![
+        "execute_command".into(),
+        "bash".into(),
+        "sh".into(),
+        "shell".into(),
+        "run_shell".into(),
+        "run_command".into(),
+        "terminal".into(),
+        "exec".into(),
+        "powershell".into(),
+        "cmd".into(),
     ]
 }
 
@@ -317,8 +337,9 @@ impl SecurityEngine {
             ));
         }
 
-        if tool_name == "execute_command" || tool_name == "bash" || tool_name == "sh" {
-            for cmd in &self.config.commands.blocked_commands {
+        let commands = &self.config.commands;
+        if commands.check_all_tools || commands.shell_tools.iter().any(|t| t == tool_name) {
+            for cmd in &commands.blocked_commands {
                 if args_str.contains(cmd) {
                     return PolicyDecision::Block(format!(
                         "Forbidden command sequence '{cmd}' detected"

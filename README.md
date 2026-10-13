@@ -65,6 +65,12 @@ blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials", ".aws
 allowed_patterns = [".env.example", ".env.sample", ".env.template"]
 
 [commands]
+# true  = check every tool call for blocked commands (safest)
+# false = only check the tools listed in shell_tools
+check_all_tools = true
+shell_tools = ["execute_command", "bash", "sh", "shell", "run_shell",
+               "run_command", "terminal", "exec", "powershell", "cmd"]
+
 # Block destructive terminal commands
 blocked_commands = [
   "rm -rf",
