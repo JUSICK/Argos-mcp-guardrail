@@ -274,15 +274,15 @@ impl SecurityEngine {
 
     fn find_blocked_pattern(&self, text: &str) -> Option<&str> {
         let filesystem = &self.config.filesystem;
-        let mut remaining = text.to_string();
+        let mut remaining = text.to_lowercase();
         for allowed in filesystem.allowed_patterns.iter().filter(|a| !a.is_empty()) {
-            remaining = remaining.replace(allowed.as_str(), "\0");
+            remaining = remaining.replace(&allowed.to_lowercase(), "\0");
         }
         filesystem
             .blocked_patterns
             .iter()
             .map(String::as_str)
-            .find(|pattern| remaining.contains(pattern))
+            .find(|pattern| remaining.contains(&pattern.to_lowercase()))
     }
 
     fn check_path(&self, path_val: &str) -> Option<String> {
@@ -924,6 +924,56 @@ mod tests {
         assert!(
             !check_args(&ws, "read_multiple_files", args),
             "read_multiple_files inside workspace was blocked"
+        );
+    }
+
+    #[test]
+    fn blocks_uppercase_ssh_dir() {
+        let (ws, _) = setup("case4a");
+        let target = ws.join(".SSH").join("config");
+        assert!(
+            check(&ws, "write_file", &target),
+            "write to .SSH/config was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_uppercase_private_key() {
+        let (ws, _) = setup("case4b");
+        let target = ws.join("ID_RSA");
+        assert!(
+            check(&ws, "read_file", &target),
+            "reading ID_RSA was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_mixed_case_env_file() {
+        let (ws, _) = setup("case4c");
+        let target = ws.join(".Env");
+        assert!(
+            check(&ws, "write_file", &target),
+            "write to .Env was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_mixed_case_pattern_in_payload() {
+        let (ws, _) = setup("case4d");
+        let args = json!({ "query": "cat ~/backup/Credentials.json" });
+        assert!(
+            check_args(&ws, "search", args),
+            "payload mentioning Credentials was allowed"
+        );
+    }
+
+    #[test]
+    fn allows_uppercase_env_example() {
+        let (ws, _) = setup("case4e");
+        let target = ws.join(".ENV.EXAMPLE");
+        assert!(
+            !check(&ws, "write_file", &target),
+            ".ENV.EXAMPLE was blocked"
         );
     }
 }
