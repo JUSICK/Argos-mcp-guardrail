@@ -1,170 +1,208 @@
-# Argos (`argos`)
+# Argos
 
-> Zero-overhead policy enforcement gateway and runtime guardrail for Model Context Protocol (MCP) servers.
+Argos sits between an MCP client (Claude Desktop, Cursor) and an MCP server.
+It reads every `tools/call` request and refuses the ones that reach outside
+your workspace, touch secrets like `.env` or SSH keys, or run commands like
+`rm -rf`. Everything else goes through unchanged.
 
-[![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Protocol: MCP](https://img.shields.io/badge/Protocol-MCP-green.svg)](https://modelcontextprotocol.io/)
+It's a single binary with no network access, configured by one TOML file.
 
-`argos` acts as a transparent security pipe between AI clients (Claude Desktop, Cursor) and underlying MCP tool servers. Inspired by the zero-friction philosophy of Quad9/Pi-hole, it inspects raw JSON-RPC traffic on the fly and deterministically blocks unauthorized file access, path traversal attacks, and destructive commands before they reach your system.
+<img width="1734" height="875" alt="Argos blocking a tool call in Claude Desktop" src="https://github.com/user-attachments/assets/3554e752-14a8-4893-b7af-f4f81800e170" />
 
----
+## What it blocks
 
-<img width="1734" height="875" alt="image" src="https://github.com/user-attachments/assets/3554e752-14a8-4893-b7af-f4f81800e170" />
+- **Paths outside the workspace.** Paths are resolved before they're
+  checked (`..`, symlinks, junctions, files that don't exist yet), so
+  `../` tricks and links pointing elsewhere don't get through.
+- **Sensitive files**: anything matching `blocked_patterns`. By default
+  that's `.env`, `.ssh`, `id_rsa`, `id_ed25519`, `credentials`, `.npmrc`,
+  `.aws` and `.git-credentials`, matched case-insensitively.
+- **Destructive commands**: anything containing one of `blocked_commands`.
+  By default that's `rm -rf`, `rm -fr`, `mkfs`, `dd if=`, `chmod -R 777` and
+  the classic fork bomb. Case and extra spaces don't matter.
 
----
+A blocked call never reaches the server. The client gets a tool result with
+`isError: true` that says what rule it hit.
 
-## Features
+This is pattern matching, not a sandbox. It keeps an agent from wandering
+into places it shouldn't, but a command can always be phrased in a way the
+patterns don't catch, and it does nothing about a server that is itself
+malicious.
 
-- **Sub-millisecond Overhead:** Built with pure Rust and Tokio asynchronous streams. Zero perceptible lag for the agent or developer.
-- **Path Traversal Sandboxing:** Enforces strict workspace boundaries via OS path canonicalization and `../` stripping.
-- **Secret & Sensitive File Shield:** Block access to `.env`, private keys (`id_rsa`, `id_ed25519`), and cloud credentials.
-- **Destructive Command Blocker:** Intercepts dangerous terminal commands (`rm -rf`, disk formatters, fork bombs).
-- **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`argos-audit.log`) without cloud telemetry. Each entry records `argos_pid` and `server_pid`, so sessions sharing one log can be told apart. Only file paths are logged; every other argument value (file contents, commands) is replaced with `[REDACTED]`. On macOS/Linux the log is created readable only by its owner; on Windows it inherits the permissions of the folder it is in.
-- **Flexible Configuration:** Declarative rule customization via `argos.toml`.
-- **Your Own Local & Private Tool**: Built entirely in Rust as a self-contained, ~1 MB single binary with zero external telemetry or cloud dependencies. Argos relies strictly on deterministic pattern matching, native OS primitives, and JSON-RPC stream interception—ensuring your sensitive code, configuration keys, and audit trails never leave your local machine.
----
+## Install
 
-## Quick Start
+### Download
 
-### 1. Installation
+Grab the file for your system from
+[Releases](https://github.com/JUSICK/Argos-mcp-guardrail/releases):
 
-#### Option A: Pre-built Binaries (Windows, Linux & macOS)
-Download the latest pre-compiled binary for your system from the [Releases](https://github.com/JUSICK/Argos-mcp-guardrail/releases) page:
-* **Windows**: Download `argos.exe` (or unpack `argos-windows-x86_64.zip`).
-* **Linux**: Download and extract `argos-linux-x86_64.tar.gz`:
-  ```bash
-  tar -xvf argos-linux-x86_64.tar.gz
+- **Windows**: `argos.exe`, or `argos-windows-x86_64.zip`
+- **Linux**: `argos-linux-x86_64.tar.gz` (statically linked, runs on any distro)
+
+  ```sh
+  tar -xzf argos-linux-x86_64.tar.gz
   chmod +x argos
   ```
-* **macOS** (Apple Silicon & Intel): Download and extract `argos-macos-universal.tar.gz`. The binary is not signed by Apple, so remove the download quarantine once before the first run:
-  ```bash
-  tar -xvf argos-macos-universal.tar.gz
+
+- **macOS** (Apple Silicon and Intel): `argos-macos-universal.tar.gz`. The
+  binary isn't signed by Apple, so clear the quarantine flag once before
+  the first run:
+
+  ```sh
+  tar -xzf argos-macos-universal.tar.gz
   xattr -d com.apple.quarantine argos
   ```
-#### Option B: Build from Source (any platform)
-If you prefer compiling locally:
-  ```bash
-  git clone https://github.com/JUSICK/Argos-mcp-guardrail.git
-  cd Argos-mcp-guardrail
-  cargo build --release
-  ```
 
-The compiled binary will be located at:
- - Linux / macOS: target/release/argos
- - Windows: target/release/argos.exe
+### Build from source
 
+```sh
+git clone https://github.com/JUSICK/Argos-mcp-guardrail.git
+cd Argos-mcp-guardrail
+cargo build --release
+```
 
-### 2. Configure policies (argos.toml)
-Create and place `argos.toml` next to the argos executable:
+The binary ends up in `target/release/argos` (`argos.exe` on Windows).
 
-```bash
+## Use it with Claude Desktop
+
+In `claude_desktop_config.json`, run Argos instead of the server and give it
+the server command after `--`. Argos's own options go before `--`.
+
+Windows:
+
+```json
+{
+  "mcpServers": {
+    "Argos": {
+      "command": "C:\\path\\to\\argos.exe",
+      "args": [
+        "--workspace", "C:\\Users\\you\\projects\\my-project",
+        "--",
+        "npx.cmd", "-y", "@modelcontextprotocol/server-filesystem",
+        "C:\\Users\\you\\projects\\my-project"
+      ]
+    }
+  }
+}
+```
+
+macOS / Linux:
+
+```json
+{
+  "mcpServers": {
+    "Argos": {
+      "command": "/usr/local/bin/argos",
+      "args": [
+        "--workspace", "/Users/you/projects/my-project",
+        "--",
+        "npx", "-y", "@modelcontextprotocol/server-filesystem",
+        "/Users/you/projects/my-project"
+      ]
+    }
+  }
+}
+```
+
+Then restart Claude Desktop. Cursor uses the same `mcpServers` format in its
+`mcp.json`.
+
+`--workspace` is the folder Argos keeps the agent inside. If you leave it
+out, Argos uses the last argument after `--` that is an existing directory.
+It refuses to start if there isn't one, or if that would make the workspace
+`/` or `C:\`. Either way it prints the folder it picked to stderr, which
+shows up in the client's MCP log.
+
+You can run several Argos entries side by side, for example `Argos-Backend`
+and `Argos-Frontend` with different workspaces.
+
+## Configuration
+
+Argos reads `argos.toml` from the folder its executable is in. Without one
+it uses the defaults below. If the file has a syntax error or a key Argos
+doesn't recognise, it prints the error and exits, so a typo can't quietly
+turn your rules off.
+
+Keep the executable, and with it `argos.toml`, outside the workspace it
+protects. Otherwise the agent could edit its own rules.
+
+This is the full default config:
+
+```toml
 [filesystem]
-# Enforce workspace boundary checks
+# Block paths that resolve to somewhere outside the workspace.
 block_path_traversal = true
 
-# Tool arguments treated as file paths (a single path or an array of paths).
-# Each one is resolved and checked against the workspace boundary and
-# blocked_patterns. Note: any argument with one of these names is treated as
-# a path, even if the tool means something else by it (e.g. `to`).
+# Arguments with these names are treated as paths (a string or a list of
+# strings). Any argument with one of these names counts, even if the tool
+# means something else by it, e.g. `to`.
 path_keys = ["path", "uri", "paths", "source", "destination", "src", "dest",
              "target", "from", "to", "file", "filename", "directory", "dir"]
 
-# Block access to sensitive files and credentials
-blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials", ".aws", ".npmrc"]
+# Checked against resolved paths and against the raw arguments, so a call
+# that merely mentions `.env` in its content is blocked too.
+blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials",
+                    ".npmrc", ".aws", ".git-credentials"]
 
-# Explicit exceptions allowed through the policy
+# Text matching one of these is ignored when checking blocked_patterns,
+# so `.env.example` is readable while `.env` isn't.
 allowed_patterns = [".env.example", ".env.sample", ".env.template"]
 
 [commands]
-# true  = check every tool call for blocked commands (safest)
-# false = only check the tools listed in shell_tools
+# true: check every tool call for blocked commands.
+# false: only check the tools listed in shell_tools.
 check_all_tools = true
 shell_tools = ["execute_command", "bash", "sh", "shell", "run_shell",
                "run_command", "terminal", "exec", "powershell", "cmd"]
 
-# Block destructive terminal commands
-blocked_commands = [
-  "rm -rf",
-  "mkfs",
-  ":(){ :|:& };:",
-  "chmod -R 777",
-  "dd if=",
-  "rm -fr"
-]
+blocked_commands = ["rm -rf", "rm -fr", "mkfs", ":(){ :|:& };:",
+                    "dd if=", "chmod -R 777"]
 
 [audit]
 enabled = true
-# Allows to log ALLOWED processes
+# Also log calls that were allowed.
 log_allowed = false
-# Just a file name to create one in the same directory where argos is, or full dir
+# A bare file name goes next to the executable; an absolute path is used as is.
 log_file = "argos-audit.log"
 ```
 
-### 3. Integrate with Claude Desktop or Cursor
-Update your `claude_desktop_config.json`: 
+A list you set replaces the default list rather than adding to it. If you
+add your own `blocked_patterns`, copy in the defaults you want to keep.
 
-#### Windows Example:
-  ```bash
-  {
-    "mcpServers": {
-      "Argos": {
-        "command": "C:\\path\\to\\argos.exe",
-        "args": [
-          "--workspace",
-          "C:\\Users\\username\\projects\\my-workspace",
-          "--",
-          "npx.cmd",
-          "-y",
-          "@modelcontextprotocol/server-filesystem",
-          "C:\\Users\\username\\projects\\my-workspace"
-        ]
-      }
-    }
-  }
-  ```
-  
-#### MacOS / Linux
-  ```bash
-    {
-    "mcpServers": {
-      "Argos": {
-        "command": "/usr/local/bin/argos",
-        "args": [
-          "--workspace",
-          "/Users/username/projects/my-workspace",
-          "--",
-          "npx",
-          "-y",
-          "@modelcontextprotocol/server-filesystem",
-          "/Users/username/projects/my-workspace"
-        ]
-      }
-    }
-  }
-  ```
+## Audit log
 
-`--workspace` sets the directory Argos treats as the sandbox boundary. If you leave it out, Argos uses the last argument after `--` that is an existing directory, and refuses to start if there is none or if it is a filesystem root (`/`, `C:\`). The chosen root is printed to stderr on startup.
+Every blocked call, and every allowed one if `log_allowed = true`, is
+appended to the log as one line of JSON:
 
-Restart Claude Desktop, and Argos will actively guard your tool calls against unauthorized filesystem traversal and credential exposure.
-
-### 4. How it works:
-
-```bash
-[ AI Client (Claude / Cursor) ]
-              │
-              │ stdin / stdout (JSON-RPC)
-              ▼
-   ┌───────────────────────┐
-   │         argos         │  <── Inspects tools/call in <0.2ms
-   └───────────────────────┘
-         │           │
-   (If Allowed)  (If Blocked) ──> Returns JSON-RPC Error & logs event
-         │
-         ▼
-[ Real MCP Tool Server ]
+```json
+{"timestamp":"2026-10-13T20:47:31.201262620+00:00","argos_pid":2668,"server_pid":2692,"event_type":"BLOCKED","tool_name":"read_file","reason":"Resolved target path escapes workspace boundary: /etc/passwd","arguments":{"path":"/etc/passwd"}}
 ```
 
-You are able to have as many Argos as you want, change their names e.g. "Argos-Backend", "Argos-Frontend" for a big project that has 2 or more AI agents.
+Only path arguments are written out. Every other value, such as file
+contents or commands, is replaced with `[REDACTED]`, so a blocked attempt
+to write a secret doesn't end up in the log. `argos_pid` and `server_pid`
+tell apart sessions that share one log file.
 
-MIT License. Free for personal and commercial use.
+On macOS and Linux the file is created readable only by you. On Windows it
+gets the permissions of the folder it's in.
+
+## How it works
+
+```
+MCP client  <── stdin/stdout ──>  argos  <── stdin/stdout ──>  MCP server
+                                    │
+                         blocked: reply to the client
+                         and write the audit log
+```
+
+Argos starts the server as a child process and relays its stdin and stdout
+line by line. Only `tools/call` requests are inspected; everything else,
+including all of the server's replies, passes through as is.
+
+A line longer than 8 MiB ends the session instead of being buffered. When
+the client disconnects, Argos closes the server's input and waits up to 30
+seconds for any replies still on their way before stopping it.
+
+## License
+
+MIT
