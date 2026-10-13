@@ -7,8 +7,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use tokio::fs::OpenOptions;
-use tokio::io::{self, AsyncWriteExt};
+use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -490,6 +491,100 @@ fn resolve_workspace(argos_args: &[String], target_args: &[String]) -> Result<Pa
     Ok(workspace)
 }
 
+async fn write_line<W: AsyncWrite + Unpin>(out: &Mutex<W>, bytes: &[u8]) {
+    let mut out = out.lock().await;
+    let _ = out.write_all(bytes).await;
+    let _ = out.write_all(b"\n").await;
+    let _ = out.flush().await;
+}
+
+async fn run_proxy<CI, CO, SI, SO>(
+    engine: &SecurityEngine,
+    client_in: CI,
+    client_out: CO,
+    mut server_in: SI,
+    server_out: SO,
+) where
+    CI: AsyncRead + Unpin,
+    CO: AsyncWrite + Unpin,
+    SI: AsyncWrite + Unpin,
+    SO: AsyncRead + Unpin,
+{
+    let client_out = Mutex::new(client_out);
+    let out = &client_out;
+    let mut client_lines = FramedRead::new(client_in, LinesCodec::new());
+    let mut server_lines = FramedRead::new(server_out, LinesCodec::new());
+
+    let to_client = async move {
+        while let Some(Ok(line)) = server_lines.next().await {
+            write_line(out, line.as_bytes()).await;
+        }
+    };
+
+    let to_server = async move {
+        while let Some(Ok(line)) = client_lines.next().await {
+            if let Ok(rpc) = serde_json::from_str::<JsonRpcRequest>(&line) {
+                if rpc.method == "tools/call" {
+                    let tool_name = rpc
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("name"))
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+
+                    let args = rpc
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("arguments"))
+                        .cloned();
+
+                    match engine.inspect_tool_call(&tool_name, &args) {
+                        PolicyDecision::Block(reason) => {
+                            engine
+                                .log_event(AuditEvent {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    event_type: "BLOCKED",
+                                    tool_name,
+                                    reason: Some(reason.clone()),
+                                    arguments: args,
+                                })
+                                .await;
+
+                            let blocked_reply = JsonRpcSuccessResponse::blocked(rpc.id, &reason);
+                            let json_bytes = serde_json::to_vec(&blocked_reply).unwrap();
+                            write_line(out, &json_bytes).await;
+                            continue;
+                        }
+                        PolicyDecision::Allow => {
+                            if engine.config.audit.log_allowed {
+                                engine
+                                    .log_event(AuditEvent {
+                                        timestamp: Utc::now().to_rfc3339(),
+                                        event_type: "ALLOWED",
+                                        tool_name,
+                                        reason: None,
+                                        arguments: args,
+                                    })
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let _ = server_in.write_all(line.as_bytes()).await;
+            let _ = server_in.write_all(b"\n").await;
+            let _ = server_in.flush().await;
+        }
+    };
+
+    tokio::select! {
+        _ = to_client => {}
+        _ = to_server => {}
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_args: Vec<String> = env::args().collect();
@@ -532,81 +627,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .spawn()
         .map_err(|e| format!("Failed to spawn target process '{program}': {e}"))?;
 
-    let mut child_stdin = child.stdin.take().expect("Failed to open child stdin");
+    let child_stdin = child.stdin.take().expect("Failed to open child stdin");
     let child_stdout = child.stdout.take().expect("Failed to open child stdout");
 
-    let stdin_reader = FramedRead::new(io::stdin(), LinesCodec::new());
-    let mut stdout_reader = FramedRead::new(child_stdout, LinesCodec::new());
-    let mut parent_stdout = io::stdout();
-
-    let stdout_forwarder = tokio::spawn(async move {
-        while let Some(Ok(line)) = stdout_reader.next().await {
-            let _ = parent_stdout.write_all(line.as_bytes()).await;
-            let _ = parent_stdout.write_all(b"\n").await;
-            let _ = parent_stdout.flush().await;
-        }
-    });
-
-    let mut stdin_stream = stdin_reader;
-
     tokio::select! {
-        _ = async {
-            while let Some(Ok(line)) = stdin_stream.next().await {
-                if let Ok(rpc) = serde_json::from_str::<JsonRpcRequest>(&line) {
-                    if rpc.method == "tools/call" {
-                        let tool_name = rpc.params.as_ref()
-                            .and_then(|p| p.get("name"))
-                            .and_then(|n| n.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-
-                        let args = rpc.params.as_ref().and_then(|p| p.get("arguments")).cloned();
-
-                        match engine.inspect_tool_call(&tool_name, &args) {
-                            PolicyDecision::Block(reason) => {
-                                engine.log_event(AuditEvent {
-                                    timestamp: Utc::now().to_rfc3339(),
-                                    event_type: "BLOCKED",
-                                    tool_name,
-                                    reason: Some(reason.clone()),
-                                    arguments: args,
-                                }).await;
-
-                                let blocked_reply = JsonRpcSuccessResponse::blocked(rpc.id, &reason);
-                                let json_bytes = serde_json::to_vec(&blocked_reply).unwrap();
-                                let mut out = io::stdout();
-                                let _ = out.write_all(&json_bytes).await;
-                                let _ = out.write_all(b"\n").await;
-                                let _ = out.flush().await;
-                                continue;
-                            }
-                            PolicyDecision::Allow => {
-                                if engine.config.audit.log_allowed {
-                                    engine.log_event(AuditEvent {
-                                        timestamp: Utc::now().to_rfc3339(),
-                                        event_type: "ALLOWED",
-                                        tool_name,
-                                        reason: None,
-                                        arguments: args,
-                                    }).await;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let _ = child_stdin.write_all(line.as_bytes()).await;
-                let _ = child_stdin.write_all(b"\n").await;
-                let _ = child_stdin.flush().await;
-            }
-        } => {}
-
+        _ = run_proxy(&engine, io::stdin(), io::stdout(), child_stdin, child_stdout) => {}
         _ = tokio::signal::ctrl_c() => {
             eprintln!("\n[argos] Interrupted. Shutting down gracefully...");
         }
     }
 
-    stdout_forwarder.abort();
     let _ = child.kill().await;
 
     Ok(())
