@@ -458,6 +458,7 @@ impl SecurityEngine {
             options.mode(0o600);
             if let Ok(mut file) = options.open(&log_path).await {
                 let _ = file.write_all(format!("{serialized}\n").as_bytes()).await;
+                let _ = file.flush().await;
             }
         }
     }
