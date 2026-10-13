@@ -1,17 +1,17 @@
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use chrono::Utc;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::fs::OpenOptions;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 struct AppConfig {
     #[serde(default)]
     filesystem: FilesystemConfig,
@@ -62,7 +62,7 @@ struct AuditConfig {
     #[serde(default = "default_log_file")]
     log_file: String,
     #[serde(default = "default_false")]
-    log_allowed: bool, 
+    log_allowed: bool,
 }
 
 impl Default for AuditConfig {
@@ -75,10 +75,15 @@ impl Default for AuditConfig {
     }
 }
 
-
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
-fn default_log_file() -> String { "argos-audit.log".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+fn default_log_file() -> String {
+    "argos-audit.log".to_string()
+}
 fn default_blocked_patterns() -> Vec<String> {
     vec![
         ".env".into(),
@@ -106,16 +111,6 @@ fn default_blocked_commands() -> Vec<String> {
         "dd if=".into(),
         "chmod -R 777".into(),
     ]
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            filesystem: FilesystemConfig::default(),
-            commands: CommandsConfig::default(),
-            audit: AuditConfig::default(),
-        }
-    }
 }
 
 impl AppConfig {
@@ -175,15 +170,15 @@ impl JsonRpcSuccessResponse {
             result: McpToolResult {
                 content: vec![McpContent {
                     content_type: "text",
-                    text: format!("[SECURITY POLICY VIOLATION] Action rejected by Argos Gateway: {reason}"),
+                    text: format!(
+                        "[SECURITY POLICY VIOLATION] Action rejected by Argos Gateway: {reason}"
+                    ),
                 }],
-                is_error: true, 
+                is_error: true,
             },
         }
     }
 }
-
-
 
 #[derive(Debug, Serialize)]
 struct AuditEvent {
@@ -228,7 +223,9 @@ impl SecurityEngine {
                 if self.config.filesystem.block_path_traversal
                     && (path_val.contains("../") || path_val.contains("..\\"))
                 {
-                    return PolicyDecision::Block("Explicit path traversal ('../') attempt detected".into());
+                    return PolicyDecision::Block(
+                        "Explicit path traversal ('../') attempt detected".into(),
+                    );
                 }
 
                 let candidate = PathBuf::from(path_val);
@@ -367,7 +364,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(pos) if pos + 1 < raw_args.len() => &raw_args[pos + 1..],
         _ => {
             eprintln!("Usage: argos -- <command> [args...]");
-            eprintln!("Example: argos -- npx -y @modelcontextprotocol/server-filesystem /workspace");
+            eprintln!(
+                "Example: argos -- npx -y @modelcontextprotocol/server-filesystem /workspace"
+            );
             std::process::exit(1);
         }
     };
@@ -475,4 +474,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
