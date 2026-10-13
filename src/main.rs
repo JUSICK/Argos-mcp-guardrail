@@ -6,6 +6,7 @@ use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::fs::OpenOptions;
 use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
@@ -491,6 +492,8 @@ fn resolve_workspace(argos_args: &[String], target_args: &[String]) -> Result<Pa
     Ok(workspace)
 }
 
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
+
 async fn write_line<W: AsyncWrite + Unpin>(out: &Mutex<W>, bytes: &[u8]) {
     let mut out = out.lock().await;
     let _ = out.write_all(bytes).await;
@@ -579,9 +582,13 @@ async fn run_proxy<CI, CO, SI, SO>(
         }
     };
 
-    tokio::select! {
-        _ = to_client => {}
-        _ = to_server => {}
+    tokio::pin!(to_client);
+    let client_done = tokio::select! {
+        _ = &mut to_client => false,
+        _ = to_server => true,
+    };
+    if client_done {
+        let _ = tokio::time::timeout(SHUTDOWN_GRACE, to_client).await;
     }
 }
 
@@ -637,7 +644,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let _ = child.kill().await;
+    if tokio::time::timeout(SHUTDOWN_GRACE, child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+    }
 
     Ok(())
 }
@@ -802,6 +814,108 @@ mod tests {
         let mut target = vec!["npx".to_string(), "server-filesystem".to_string()];
         target.extend(strs(&[&outside, &ws]));
         assert_eq!(resolve_workspace(&[], &target), Ok(ws));
+    }
+
+    struct Session {
+        client_output: String,
+        server_received: Vec<String>,
+    }
+
+    async fn run_session(engine: &SecurityEngine, input: Vec<u8>) -> Session {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+        let (client_in, mut client_feed) = io::duplex(1 << 16);
+        let (client_out, mut client_read) = io::duplex(1 << 16);
+        let (server_in, server_read) = io::duplex(1 << 16);
+        let (server_out, mut server_write) = io::duplex(1 << 16);
+
+        let feeder = tokio::spawn(async move {
+            let _ = client_feed.write_all(&input).await;
+        });
+        let fake_server = tokio::spawn(async move {
+            let mut received = Vec::new();
+            let mut lines = BufReader::new(server_read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                received.push(line);
+            }
+            for line in &received {
+                if let Some(id) = serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|v| v.get("id").cloned())
+                {
+                    let reply = json!({ "jsonrpc": "2.0", "id": id, "result": {} });
+                    let _ = server_write
+                        .write_all(format!("{reply}\n").as_bytes())
+                        .await;
+                }
+            }
+            received
+        });
+        let collector = tokio::spawn(async move {
+            let mut out = String::new();
+            let _ = client_read.read_to_string(&mut out).await;
+            out
+        });
+
+        run_proxy(engine, client_in, client_out, server_in, server_out).await;
+
+        feeder.await.unwrap();
+        Session {
+            client_output: collector.await.unwrap(),
+            server_received: fake_server.await.unwrap(),
+        }
+    }
+
+    fn tool_call(id: u64, tool: &str, path: &Path) -> String {
+        format!(
+            "{}\n",
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": { "path": path.to_string_lossy(), "content": "x" } }
+            })
+        )
+    }
+
+    fn reply_ids(output: &str) -> Vec<Value> {
+        output
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).expect("client got a non-JSON line"))
+            .filter_map(|v| v.get("id").cloned())
+            .collect()
+    }
+
+    fn quiet_engine(ws: &Path) -> SecurityEngine {
+        let config: AppConfig = toml::from_str("[audit]\nenabled = false\n").unwrap();
+        SecurityEngine::new(config, ws.to_path_buf())
+    }
+
+    #[tokio::test]
+    async fn delivers_reply_sent_after_client_eof() {
+        let (ws, _) = setup("shutdown-reply");
+        let input = tool_call(1, "write_file", &ws.join("notes.txt"));
+        let session = run_session(&quiet_engine(&ws), input.into_bytes()).await;
+        assert_eq!(
+            reply_ids(&session.client_output),
+            vec![json!(1)],
+            "server reply sent after client EOF was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivers_both_blocked_and_forwarded_replies() {
+        let (ws, outside) = setup("shutdown-both");
+        let input = tool_call(1, "write_file", &outside.join("evil.ps1"))
+            + &tool_call(2, "write_file", &ws.join("notes.txt"));
+        let session = run_session(&quiet_engine(&ws), input.into_bytes()).await;
+        let mut ids = reply_ids(&session.client_output);
+        ids.sort_by_key(|v| v.as_u64());
+        assert_eq!(
+            ids,
+            vec![json!(1), json!(2)],
+            "client did not get one reply per request"
+        );
     }
 
     fn write_config(name: &str, body: &str) -> PathBuf {
