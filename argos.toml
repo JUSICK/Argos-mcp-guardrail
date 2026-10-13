@@ -1,6 +1,10 @@
 [filesystem]
 block_path_traversal = true
 
+# Tool arguments treated as file paths (a single path or an array of paths)
+path_keys = ["path", "uri", "paths", "source", "destination", "src", "dest",
+             "target", "from", "to", "file", "filename", "directory", "dir"]
+
 blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials"]
 
 allowed_patterns = [".env.example", ".env.sample", ".env.template"]

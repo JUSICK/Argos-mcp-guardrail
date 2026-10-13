@@ -29,6 +29,8 @@ struct FilesystemConfig {
     allowed_patterns: Vec<String>,
     #[serde(default = "default_true")]
     block_path_traversal: bool,
+    #[serde(default = "default_path_keys")]
+    path_keys: Vec<String>,
 }
 
 impl Default for FilesystemConfig {
@@ -37,6 +39,7 @@ impl Default for FilesystemConfig {
             blocked_patterns: default_blocked_patterns(),
             allowed_patterns: default_allowed_patterns(),
             block_path_traversal: true,
+            path_keys: default_path_keys(),
         }
     }
 }
@@ -107,6 +110,24 @@ fn default_allowed_patterns() -> Vec<String> {
         ".env.example".into(),
         ".env.sample".into(),
         ".env.template".into(),
+    ]
+}
+fn default_path_keys() -> Vec<String> {
+    vec![
+        "path".into(),
+        "uri".into(),
+        "paths".into(),
+        "source".into(),
+        "destination".into(),
+        "src".into(),
+        "dest".into(),
+        "target".into(),
+        "from".into(),
+        "to".into(),
+        "file".into(),
+        "filename".into(),
+        "directory".into(),
+        "dir".into(),
     ]
 }
 fn default_blocked_commands() -> Vec<String> {
@@ -214,11 +235,6 @@ enum PolicyDecision {
     Block(String),
 }
 
-// Work out where `raw` really points, even if the file doesn't exist yet.
-// `canonicalize()` only works on paths that exist, so walk up to the nearest
-// existing folder, canonicalize that (resolving symlinks/junctions), then put
-// the not-yet-existing names back on. Returns None if that's not possible,
-// e.g. a `..` in the missing part, and the caller then blocks.
 fn resolve_path(raw: &Path) -> Option<PathBuf> {
     let absolute = if raw.is_absolute() {
         raw.to_path_buf()
@@ -256,16 +272,9 @@ impl SecurityEngine {
         }
     }
 
-    // Returns the first blocked pattern found in `text`. Allow-listed names
-    // (e.g. `.env.example`) are blanked out first, so they only exempt
-    // themselves: an `id_rsa` or `.ssh` elsewhere in the text still counts.
-    // They're replaced with `\0` rather than removed, so the pieces on either
-    // side can't join up into a new match.
     fn find_blocked_pattern(&self, text: &str) -> Option<&str> {
         let filesystem = &self.config.filesystem;
         let mut remaining = text.to_string();
-        // An empty allowed pattern would "match" between every character and
-        // scramble the text, so it's skipped.
         for allowed in filesystem.allowed_patterns.iter().filter(|a| !a.is_empty()) {
             remaining = remaining.replace(allowed.as_str(), "\0");
         }
@@ -276,6 +285,44 @@ impl SecurityEngine {
             .find(|pattern| remaining.contains(pattern))
     }
 
+    fn check_path(&self, path_val: &str) -> Option<String> {
+        if self.config.filesystem.block_path_traversal
+            && (path_val.contains("../") || path_val.contains("..\\"))
+        {
+            return Some("Explicit path traversal ('../') attempt detected".into());
+        }
+
+        let candidate = PathBuf::from(path_val);
+
+        let Some(can_candidate) = resolve_path(&candidate) else {
+            return Some(format!("Could not resolve target path: {path_val}"));
+        };
+        let cand_str = can_candidate.to_string_lossy();
+        let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
+
+        if self.config.filesystem.block_path_traversal {
+            let Ok(can_root) = self.workspace_root.canonicalize() else {
+                return Some("Could not resolve workspace root".into());
+            };
+            let root_str = can_root.to_string_lossy();
+            let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
+
+            if !clean_candidate.starts_with(clean_root) {
+                return Some(format!(
+                    "Resolved target path escapes workspace boundary: {clean_candidate}"
+                ));
+            }
+        }
+
+        if let Some(pattern) = self.find_blocked_pattern(clean_candidate) {
+            return Some(format!(
+                "Resolved target matches prohibited pattern '{pattern}'"
+            ));
+        }
+
+        None
+    }
+
     fn inspect_tool_call(&self, tool_name: &str, args: &Option<Value>) -> PolicyDecision {
         let args_str = match args {
             Some(v) => v.to_string(),
@@ -283,50 +330,16 @@ impl SecurityEngine {
         };
 
         if let Some(Value::Object(map)) = args {
-            let target_path_str = map
-                .get("path")
-                .or_else(|| map.get("uri"))
-                .and_then(|v| v.as_str());
-
-            if let Some(path_val) = target_path_str {
-                if self.config.filesystem.block_path_traversal
-                    && (path_val.contains("../") || path_val.contains("..\\"))
-                {
-                    return PolicyDecision::Block(
-                        "Explicit path traversal ('../') attempt detected".into(),
-                    );
-                }
-
-                let candidate = PathBuf::from(path_val);
-
-                // Fail closed: if we can't work out where the path really points,
-                // we can't check it, so it doesn't go through.
-                let Some(can_candidate) = resolve_path(&candidate) else {
-                    return PolicyDecision::Block(format!(
-                        "Could not resolve target path: {path_val}"
-                    ));
+            for key in &self.config.filesystem.path_keys {
+                let path_vals: Vec<&str> = match map.get(key) {
+                    Some(Value::String(s)) => vec![s.as_str()],
+                    Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+                    _ => continue,
                 };
-                let cand_str = can_candidate.to_string_lossy();
-                let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
-
-                if self.config.filesystem.block_path_traversal {
-                    let Ok(can_root) = self.workspace_root.canonicalize() else {
-                        return PolicyDecision::Block("Could not resolve workspace root".into());
-                    };
-                    let root_str = can_root.to_string_lossy();
-                    let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
-
-                    if !clean_candidate.starts_with(clean_root) {
-                        return PolicyDecision::Block(format!(
-                            "Resolved target path escapes workspace boundary: {clean_candidate}"
-                        ));
+                for path_val in path_vals {
+                    if let Some(reason) = self.check_path(path_val) {
+                        return PolicyDecision::Block(reason);
                     }
-                }
-
-                if let Some(pattern) = self.find_blocked_pattern(clean_candidate) {
-                    return PolicyDecision::Block(format!(
-                        "Resolved target matches prohibited pattern '{pattern}'"
-                    ));
                 }
             }
         }
@@ -530,9 +543,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // Each test gets its own fresh folder under the system temp dir:
-    //   <temp>/argos-test-<name>/workspace   <- what Argos protects
-    //   <temp>/argos-test-<name>/outside     <- somewhere the agent must not reach
     fn setup(name: &str) -> (PathBuf, PathBuf) {
         let base = env::temp_dir().join(format!("argos-test-{name}"));
         let _ = fs::remove_dir_all(&base);
@@ -552,8 +562,6 @@ mod tests {
         )
     }
 
-    // Like `check`, but with any tool name and any arguments (e.g. move_file,
-    // which uses `source`/`destination` instead of `path`).
     fn check_args(workspace: &Path, tool: &str, args: Value) -> bool {
         let engine = SecurityEngine::new(AppConfig::default(), workspace.to_path_buf());
         matches!(
@@ -562,8 +570,6 @@ mod tests {
         )
     }
 
-    // Like `check_args`, but with settings written as TOML, the same way
-    // they would appear in argos.toml.
     fn check_with_config(config_toml: &str, workspace: &Path, tool: &str, args: Value) -> bool {
         let config: AppConfig = toml::from_str(config_toml).unwrap();
         let engine = SecurityEngine::new(config, workspace.to_path_buf());
@@ -573,8 +579,6 @@ mod tests {
         )
     }
 
-    // Makes `link` point at the existing folder `target`. On Windows this is a
-    // junction, which (unlike a symlink) needs no admin rights or Developer Mode.
     fn link_dir(target: &Path, link: &Path) {
         #[cfg(windows)]
         {
@@ -591,7 +595,6 @@ mod tests {
         std::os::unix::fs::symlink(target, link).unwrap();
     }
 
-    // Case 1: new file outside the workspace, given as a full path.
     #[test]
     fn blocks_new_file_outside_workspace() {
         let (ws, outside) = setup("case1");
@@ -602,8 +605,6 @@ mod tests {
         );
     }
 
-    // Case 2: new file written through a link inside the workspace that
-    // points at a sensitive folder outside it.
     #[test]
     fn blocks_new_file_through_link_to_sensitive_dir() {
         let (ws, outside) = setup("case2");
@@ -618,7 +619,6 @@ mod tests {
         );
     }
 
-    // Case 3: new file directly inside the workspace.
     #[test]
     fn allows_new_file_in_workspace() {
         let (ws, _) = setup("case3");
@@ -629,7 +629,6 @@ mod tests {
         );
     }
 
-    // Case 4: new file in a subfolder that doesn't exist yet, inside the workspace.
     #[test]
     fn allows_new_file_in_new_subfolder() {
         let (ws, _) = setup("case4");
@@ -640,7 +639,6 @@ mod tests {
         );
     }
 
-    // Case 5: new .env file inside the workspace.
     #[test]
     fn blocks_new_env_file_in_workspace() {
         let (ws, _) = setup("case5");
@@ -651,7 +649,6 @@ mod tests {
         );
     }
 
-    // Case 6: reading an existing ordinary file inside the workspace.
     #[test]
     fn allows_reading_existing_file() {
         let (ws, _) = setup("case6");
@@ -663,8 +660,6 @@ mod tests {
         );
     }
 
-    // Case 1a: a folder whose name merely contains `.env.example` must not
-    // switch off the `id_rsa` check for files inside it.
     #[test]
     fn blocks_key_inside_folder_named_like_allowed_pattern() {
         let (ws, _) = setup("case1a");
@@ -675,7 +670,6 @@ mod tests {
         );
     }
 
-    // Case 1b: same trick with `.env.sample` hiding a `.ssh` folder.
     #[test]
     fn blocks_ssh_inside_folder_named_like_allowed_pattern() {
         let (ws, _) = setup("case1b");
@@ -686,8 +680,6 @@ mod tests {
         );
     }
 
-    // Case 1c: moving a private key onto an allow-listed name. move_file has
-    // no `path` key, so only the argument-payload check stands in the way.
     #[test]
     fn blocks_moving_key_to_allowed_name() {
         let (ws, _) = setup("case1c");
@@ -703,7 +695,6 @@ mod tests {
         );
     }
 
-    // Case 1d: the allow-list still does its real job.
     #[test]
     fn allows_env_example_file() {
         let (ws, _) = setup("case1d");
@@ -714,7 +705,6 @@ mod tests {
         );
     }
 
-    // Case 1e: an ordinary file whose text mentions `.env.example`.
     #[test]
     fn allows_ordinary_file_mentioning_env_example() {
         let (ws, _) = setup("case1e");
@@ -728,7 +718,6 @@ mod tests {
         );
     }
 
-    // Case 2a: a shell tool with a name other than bash/sh/execute_command.
     #[test]
     fn blocks_destructive_command_in_run_shell() {
         let (ws, _) = setup("case2a");
@@ -739,7 +728,6 @@ mod tests {
         );
     }
 
-    // Case 2b: another unknown tool name, with a different argument key.
     #[test]
     fn blocks_destructive_command_in_terminal() {
         let (ws, _) = setup("case2b");
@@ -750,7 +738,6 @@ mod tests {
         );
     }
 
-    // Case 2c: by default every tool is checked, even one that isn't a shell.
     #[test]
     fn blocks_destructive_command_in_any_tool_by_default() {
         let (ws, _) = setup("case2c");
@@ -764,7 +751,6 @@ mod tests {
         );
     }
 
-    // Case 2d: the tool names that were always checked still are.
     #[test]
     fn blocks_destructive_command_in_bash() {
         let (ws, _) = setup("case2d");
@@ -775,7 +761,6 @@ mod tests {
         );
     }
 
-    // Case 2e: harmless shell commands still go through.
     #[test]
     fn allows_harmless_command_in_run_shell() {
         let (ws, _) = setup("case2e");
@@ -786,8 +771,6 @@ mod tests {
         );
     }
 
-    // Case 2f: with check_all_tools off, tools listed in shell_tools are
-    // still checked.
     #[test]
     fn blocks_listed_shell_tool_when_check_all_tools_off() {
         let (ws, _) = setup("case2f");
@@ -803,8 +786,6 @@ mod tests {
         );
     }
 
-    // Case 2g: with check_all_tools off, tools not in shell_tools aren't
-    // checked for commands (the opt-out works).
     #[test]
     fn allows_unlisted_tool_when_check_all_tools_off() {
         let (ws, _) = setup("case2g");
@@ -819,6 +800,130 @@ mod tests {
         assert!(
             !check_with_config(config, &ws, "write_file", args),
             "write_file was command-checked with check_all_tools off"
+        );
+    }
+
+    #[test]
+    fn blocks_move_file_source_outside_workspace() {
+        let (ws, outside) = setup("case3a");
+        let args = json!({
+            "source": outside.join("secret.txt").to_string_lossy(),
+            "destination": ws.join("secret.txt").to_string_lossy(),
+        });
+        assert!(
+            check_args(&ws, "move_file", args),
+            "move_file with source outside workspace was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_move_file_destination_outside_workspace() {
+        let (ws, outside) = setup("case3b");
+        let args = json!({
+            "source": ws.join("notes.txt").to_string_lossy(),
+            "destination": outside.join("notes.txt").to_string_lossy(),
+        });
+        assert!(
+            check_args(&ws, "move_file", args),
+            "move_file with destination outside workspace was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_copy_file_destination_through_link() {
+        let (ws, outside) = setup("case3c");
+        let link = ws.join("out");
+        link_dir(&outside, &link);
+        let args = json!({
+            "source": ws.join("notes.txt").to_string_lossy(),
+            "destination": link.join("notes.txt").to_string_lossy(),
+        });
+        assert!(
+            check_args(&ws, "copy_file", args),
+            "copy_file through link to outside was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_read_multiple_files_with_one_outside() {
+        let (ws, outside) = setup("case3d");
+        let args = json!({
+            "paths": [
+                ws.join("a.txt").to_string_lossy(),
+                outside.join("b.txt").to_string_lossy(),
+            ],
+        });
+        assert!(
+            check_args(&ws, "read_multiple_files", args),
+            "read_multiple_files with an outside path was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_outside_uri_next_to_inside_path() {
+        let (ws, outside) = setup("case3e");
+        let args = json!({
+            "path": ws.join("a.txt").to_string_lossy(),
+            "uri": outside.join("b.txt").to_string_lossy(),
+        });
+        assert!(
+            check_args(&ws, "read_file", args),
+            "outside uri next to inside path was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_traversal_in_destination() {
+        let (ws, _) = setup("case3f");
+        let args = json!({
+            "source": ws.join("notes.txt").to_string_lossy(),
+            "destination": "../outside/notes.txt",
+        });
+        assert!(
+            check_args(&ws, "move_file", args),
+            "traversal in destination was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_custom_path_key_from_config() {
+        let (ws, outside) = setup("case3g");
+        let config = r#"
+            [filesystem]
+            path_keys = ["dst"]
+        "#;
+        let args = json!({ "dst": outside.join("notes.txt").to_string_lossy() });
+        assert!(
+            check_with_config(config, &ws, "custom_copy", args),
+            "outside path under custom key 'dst' was allowed"
+        );
+    }
+
+    #[test]
+    fn allows_move_file_within_workspace() {
+        let (ws, _) = setup("case3h");
+        let args = json!({
+            "source": ws.join("a.txt").to_string_lossy(),
+            "destination": ws.join("sub").join("a.txt").to_string_lossy(),
+        });
+        assert!(
+            !check_args(&ws, "move_file", args),
+            "move_file within workspace was blocked"
+        );
+    }
+
+    #[test]
+    fn allows_read_multiple_files_inside() {
+        let (ws, _) = setup("case3i");
+        let args = json!({
+            "paths": [
+                ws.join("a.txt").to_string_lossy(),
+                ws.join("b.txt").to_string_lossy(),
+            ],
+        });
+        assert!(
+            !check_args(&ws, "read_multiple_files", args),
+            "read_multiple_files inside workspace was blocked"
         );
     }
 }

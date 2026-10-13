@@ -58,6 +58,13 @@ Create and place `argos.toml` next to the argos executable or in your workspace 
 # Enforce workspace boundary checks
 block_path_traversal = true
 
+# Tool arguments treated as file paths (a single path or an array of paths).
+# Each one is resolved and checked against the workspace boundary and
+# blocked_patterns. Note: any argument with one of these names is treated as
+# a path, even if the tool means something else by it (e.g. `to`).
+path_keys = ["path", "uri", "paths", "source", "destination", "src", "dest",
+             "target", "from", "to", "file", "filename", "directory", "dir"]
+
 # Block access to sensitive files and credentials
 blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials", ".aws", ".npmrc"]
 
