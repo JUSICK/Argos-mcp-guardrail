@@ -1,30 +1,35 @@
 [filesystem]
+# Block paths that resolve to somewhere outside the workspace.
 block_path_traversal = true
 
-# Tool arguments treated as file paths (a single path or an array of paths)
+# Arguments with these names are treated as paths (a string or a list of
+# strings). Any argument with one of these names counts, even if the tool
+# means something else by it, e.g. `to`.
 path_keys = ["path", "uri", "paths", "source", "destination", "src", "dest",
              "target", "from", "to", "file", "filename", "directory", "dir"]
 
-blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials"]
+# Checked against resolved paths and against the raw arguments, so a call
+# that merely mentions `.env` in its content is blocked too.
+blocked_patterns = [".env", ".ssh", "id_rsa", "id_ed25519", "credentials",
+                    ".npmrc", ".aws", ".git-credentials"]
 
+# Text matching one of these is ignored when checking blocked_patterns,
+# so `.env.example` is readable while `.env` isn't.
 allowed_patterns = [".env.example", ".env.sample", ".env.template"]
 
 [commands]
-# true  = check every tool call for blocked commands (safest)
-# false = only check the tools listed in shell_tools
+# true: check every tool call for blocked commands.
+# false: only check the tools listed in shell_tools.
 check_all_tools = true
 shell_tools = ["execute_command", "bash", "sh", "shell", "run_shell",
                "run_command", "terminal", "exec", "powershell", "cmd"]
 
-blocked_commands = [
-  "rm -rf",
-  "mkfs",
-  ":(){ :|:& };:",
-  "chmod -R 777",
-  "dd if="
-]
+blocked_commands = ["rm -rf", "rm -fr", "mkfs", ":(){ :|:& };:",
+                    "dd if=", "chmod -R 777"]
 
 [audit]
 enabled = true
+# Also log calls that were allowed.
 log_allowed = false
+# A bare file name goes next to the executable; an absolute path is used as is.
 log_file = "argos-audit.log"
