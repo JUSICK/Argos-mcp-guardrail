@@ -526,6 +526,7 @@ fn resolve_workspace(argos_args: &[String], target_args: &[String]) -> Result<Pa
 }
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
+const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 async fn write_line<W: AsyncWrite + Unpin>(out: &Mutex<W>, bytes: &[u8]) {
     let mut out = out.lock().await;
@@ -548,17 +549,33 @@ async fn run_proxy<CI, CO, SI, SO>(
 {
     let client_out = Mutex::new(client_out);
     let out = &client_out;
-    let mut client_lines = FramedRead::new(client_in, LinesCodec::new());
-    let mut server_lines = FramedRead::new(server_out, LinesCodec::new());
+    let mut client_lines =
+        FramedRead::new(client_in, LinesCodec::new_with_max_length(MAX_LINE_BYTES));
+    let mut server_lines =
+        FramedRead::new(server_out, LinesCodec::new_with_max_length(MAX_LINE_BYTES));
 
     let to_client = async move {
-        while let Some(Ok(line)) = server_lines.next().await {
+        while let Some(next) = server_lines.next().await {
+            let line = match next {
+                Ok(line) => line,
+                Err(e) => {
+                    eprintln!("[argos] rejected server output: {e}; closing session");
+                    break;
+                }
+            };
             write_line(out, line.as_bytes()).await;
         }
     };
 
     let to_server = async move {
-        while let Some(Ok(line)) = client_lines.next().await {
+        while let Some(next) = client_lines.next().await {
+            let line = match next {
+                Ok(line) => line,
+                Err(e) => {
+                    eprintln!("[argos] rejected client input: {e}; closing session");
+                    break;
+                }
+            };
             if let Ok(rpc) = serde_json::from_str::<JsonRpcRequest>(&line) {
                 if rpc.method == "tools/call" {
                     let tool_name = rpc
@@ -1019,6 +1036,43 @@ mod tests {
         run_session(&engine, write_call(1, &ws.join(".env"), "x")).await;
         let mode = fs::metadata(&log).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "audit log is readable by other users");
+    }
+
+    #[tokio::test]
+    async fn oversized_line_never_reaches_server() {
+        let (ws, _) = setup("line-oversized");
+        let mut input = write_call(1, &ws.join("a.txt"), "small");
+        input.extend(write_call(
+            2,
+            &ws.join("b.txt"),
+            &"A".repeat(9 * 1024 * 1024),
+        ));
+        let session = run_session(&quiet_engine(&ws), input).await;
+        assert!(
+            session
+                .server_received
+                .iter()
+                .all(|l| l.len() <= 8 * 1024 * 1024),
+            "a line over 8 MiB was forwarded to the server"
+        );
+        assert_eq!(
+            reply_ids(&session.client_output),
+            vec![json!(1)],
+            "reply to the request before the oversized line was lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_mib_write_still_forwarded() {
+        let (ws, _) = setup("line-1mib");
+        let input = write_call(1, &ws.join("a.txt"), &"A".repeat(1024 * 1024));
+        let session = run_session(&quiet_engine(&ws), input).await;
+        assert_eq!(
+            session.server_received.len(),
+            1,
+            "1 MiB write was not forwarded"
+        );
+        assert_eq!(reply_ids(&session.client_output), vec![json!(1)]);
     }
 
     fn write_config(name: &str, body: &str) -> PathBuf {
