@@ -232,6 +232,8 @@ impl JsonRpcSuccessResponse {
 #[derive(Debug, Serialize)]
 struct AuditEvent {
     timestamp: String,
+    argos_pid: u32,
+    server_pid: Option<u32>,
     event_type: &'static str,
     tool_name: String,
     reason: Option<String>,
@@ -311,6 +313,7 @@ fn redact_value(value: &Value) -> Value {
 struct SecurityEngine {
     config: AppConfig,
     workspace_root: PathBuf,
+    server_pid: Option<u32>,
 }
 
 impl SecurityEngine {
@@ -338,6 +341,7 @@ impl SecurityEngine {
         Self {
             config,
             workspace_root,
+            server_pid: None,
         }
     }
 
@@ -597,6 +601,8 @@ async fn run_proxy<CI, CO, SI, SO>(
                             engine
                                 .log_event(AuditEvent {
                                     timestamp: Utc::now().to_rfc3339(),
+                                    argos_pid: std::process::id(),
+                                    server_pid: engine.server_pid,
                                     event_type: "BLOCKED",
                                     tool_name,
                                     reason: Some(reason.clone()),
@@ -614,6 +620,8 @@ async fn run_proxy<CI, CO, SI, SO>(
                                 engine
                                     .log_event(AuditEvent {
                                         timestamp: Utc::now().to_rfc3339(),
+                                        argos_pid: std::process::id(),
+                                        server_pid: engine.server_pid,
                                         event_type: "ALLOWED",
                                         tool_name,
                                         reason: None,
@@ -674,7 +682,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     eprintln!("[argos] workspace root: {}", target_workspace.display());
 
-    let engine = SecurityEngine::new(config, target_workspace);
+    let mut engine = SecurityEngine::new(config, target_workspace);
 
     let mut cmd = Command::new(resolve_program(program));
     cmd.args(cmd_args);
@@ -685,6 +693,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("Failed to spawn target process '{program}': {e}"))?;
+    engine.server_pid = child.id();
 
     let child_stdin = child.stdin.take().expect("Failed to open child stdin");
     let child_stdout = child.stdout.take().expect("Failed to open child stdout");
@@ -1023,6 +1032,27 @@ mod tests {
         assert!(
             !logged.contains("hunter2"),
             "secret from an allowed call was written to the audit log"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_entries_record_argos_and_server_pid() {
+        let (ws, outside) = setup("audit-pid");
+        let log = outside.join("audit.log");
+        let mut engine = logging_engine(&ws, &log, false);
+        engine.server_pid = Some(4242);
+        run_session(&engine, write_call(1, &ws.join(".env"), "x")).await;
+        let logged = fs::read_to_string(&log).expect("blocked call was not logged");
+        let entry: Value = serde_json::from_str(logged.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            entry["argos_pid"],
+            json!(std::process::id()),
+            "audit entry does not say which argos process wrote it"
+        );
+        assert_eq!(
+            entry["server_pid"],
+            json!(4242),
+            "audit entry does not say which MCP server process it was for"
         );
     }
 
