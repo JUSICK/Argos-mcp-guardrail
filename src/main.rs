@@ -562,6 +562,17 @@ mod tests {
         )
     }
 
+    // Like `check_args`, but with settings written as TOML, the same way
+    // they would appear in argos.toml.
+    fn check_with_config(config_toml: &str, workspace: &Path, tool: &str, args: Value) -> bool {
+        let config: AppConfig = toml::from_str(config_toml).unwrap();
+        let engine = SecurityEngine::new(config, workspace.to_path_buf());
+        matches!(
+            engine.inspect_tool_call(tool, &Some(args)),
+            PolicyDecision::Block(_)
+        )
+    }
+
     // Makes `link` point at the existing folder `target`. On Windows this is a
     // junction, which (unlike a symlink) needs no admin rights or Developer Mode.
     fn link_dir(target: &Path, link: &Path) {
@@ -714,6 +725,100 @@ mod tests {
         assert!(
             !check_args(&ws, "write_file", args),
             "notes.txt mentioning .env.example was blocked"
+        );
+    }
+
+    // Case 2a: a shell tool with a name other than bash/sh/execute_command.
+    #[test]
+    fn blocks_destructive_command_in_run_shell() {
+        let (ws, _) = setup("case2a");
+        let args = json!({ "command": "rm -rf ~" });
+        assert!(
+            check_args(&ws, "run_shell", args),
+            "rm -rf through run_shell was allowed"
+        );
+    }
+
+    // Case 2b: another unknown tool name, with a different argument key.
+    #[test]
+    fn blocks_destructive_command_in_terminal() {
+        let (ws, _) = setup("case2b");
+        let args = json!({ "cmd": "mkfs.ext4 /dev/sda" });
+        assert!(
+            check_args(&ws, "terminal", args),
+            "mkfs through terminal was allowed"
+        );
+    }
+
+    // Case 2c: by default every tool is checked, even one that isn't a shell.
+    #[test]
+    fn blocks_destructive_command_in_any_tool_by_default() {
+        let (ws, _) = setup("case2c");
+        let args = json!({
+            "path": ws.join("run.sh").to_string_lossy(),
+            "content": "rm -rf /",
+        });
+        assert!(
+            check_args(&ws, "write_file", args),
+            "write_file containing rm -rf was allowed"
+        );
+    }
+
+    // Case 2d: the tool names that were always checked still are.
+    #[test]
+    fn blocks_destructive_command_in_bash() {
+        let (ws, _) = setup("case2d");
+        let args = json!({ "command": "rm -rf /" });
+        assert!(
+            check_args(&ws, "bash", args),
+            "rm -rf through bash was allowed"
+        );
+    }
+
+    // Case 2e: harmless shell commands still go through.
+    #[test]
+    fn allows_harmless_command_in_run_shell() {
+        let (ws, _) = setup("case2e");
+        let args = json!({ "command": "ls -la" });
+        assert!(
+            !check_args(&ws, "run_shell", args),
+            "ls -la through run_shell was blocked"
+        );
+    }
+
+    // Case 2f: with check_all_tools off, tools listed in shell_tools are
+    // still checked.
+    #[test]
+    fn blocks_listed_shell_tool_when_check_all_tools_off() {
+        let (ws, _) = setup("case2f");
+        let config = r#"
+            [commands]
+            check_all_tools = false
+            shell_tools = ["run_shell"]
+        "#;
+        let args = json!({ "command": "rm -rf ~" });
+        assert!(
+            check_with_config(config, &ws, "run_shell", args),
+            "rm -rf through listed run_shell was allowed"
+        );
+    }
+
+    // Case 2g: with check_all_tools off, tools not in shell_tools aren't
+    // checked for commands (the opt-out works).
+    #[test]
+    fn allows_unlisted_tool_when_check_all_tools_off() {
+        let (ws, _) = setup("case2g");
+        let config = r#"
+            [commands]
+            check_all_tools = false
+        "#;
+        let args = json!({
+            "path": ws.join("run.sh").to_string_lossy(),
+            "content": "rm -rf /",
+        });
+        assert!(
+            !check_with_config(config, &ws, "write_file", args),
+            "write_file was command-checked with check_all_tools off"
         );
     }
 }
