@@ -295,12 +295,45 @@ fn collect_command_texts(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+fn redact_value(value: &Value) -> Value {
+    match value {
+        Value::String(_) => Value::String("[REDACTED]".into()),
+        Value::Array(items) => Value::Array(items.iter().map(redact_value).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), redact_value(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 struct SecurityEngine {
     config: AppConfig,
     workspace_root: PathBuf,
 }
 
 impl SecurityEngine {
+    fn redact_arguments(&self, args: &Value) -> Value {
+        let Value::Object(map) = args else {
+            return redact_value(args);
+        };
+        Value::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    let is_path = self.config.filesystem.path_keys.contains(k)
+                        && match v {
+                            Value::String(_) => true,
+                            Value::Array(items) => items.iter().all(Value::is_string),
+                            _ => false,
+                        };
+                    let kept = if is_path { v.clone() } else { redact_value(v) };
+                    (k.clone(), kept)
+                })
+                .collect(),
+        )
+    }
+
     fn new(config: AppConfig, workspace_root: PathBuf) -> Self {
         Self {
             config,
@@ -419,12 +452,11 @@ impl SecurityEngine {
         };
 
         if let Ok(serialized) = serde_json::to_string(&event) {
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .await
-            {
+            let mut options = OpenOptions::new();
+            options.create(true).append(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            if let Ok(mut file) = options.open(&log_path).await {
                 let _ = file.write_all(format!("{serialized}\n").as_bytes()).await;
             }
         }
@@ -550,7 +582,7 @@ async fn run_proxy<CI, CO, SI, SO>(
                                     event_type: "BLOCKED",
                                     tool_name,
                                     reason: Some(reason.clone()),
-                                    arguments: args,
+                                    arguments: args.as_ref().map(|a| engine.redact_arguments(a)),
                                 })
                                 .await;
 
@@ -567,7 +599,9 @@ async fn run_proxy<CI, CO, SI, SO>(
                                         event_type: "ALLOWED",
                                         tool_name,
                                         reason: None,
-                                        arguments: args,
+                                        arguments: args
+                                            .as_ref()
+                                            .map(|a| engine.redact_arguments(a)),
                                     })
                                     .await;
                             }
@@ -916,6 +950,74 @@ mod tests {
             vec![json!(1), json!(2)],
             "client did not get one reply per request"
         );
+    }
+
+    fn logging_engine(ws: &Path, log: &Path, log_allowed: bool) -> SecurityEngine {
+        let config: AppConfig = toml::from_str(&format!(
+            "[audit]\nlog_file = '{}'\nlog_allowed = {log_allowed}\n",
+            log.display()
+        ))
+        .unwrap();
+        SecurityEngine::new(config, ws.to_path_buf())
+    }
+
+    fn write_call(id: u64, path: &Path, content: &str) -> Vec<u8> {
+        format!(
+            "{}\n",
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": "write_file", "arguments": { "path": path.to_string_lossy(), "content": content } }
+            })
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn blocked_secret_write_not_logged_in_plaintext() {
+        let (ws, outside) = setup("audit-blocked");
+        let log = outside.join("audit.log");
+        let engine = logging_engine(&ws, &log, false);
+        let input = write_call(1, &ws.join(".env"), "AWS_SECRET=sk-live-abc123");
+        run_session(&engine, input).await;
+        let logged = fs::read_to_string(&log).expect("blocked call was not logged");
+        assert!(logged.contains("BLOCKED"), "blocked call was not logged");
+        assert!(
+            !logged.contains("sk-live-abc123"),
+            "secret from a blocked call was written to the audit log"
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_call_secret_not_logged_when_log_allowed() {
+        let (ws, outside) = setup("audit-allowed");
+        let log = outside.join("audit.log");
+        let engine = logging_engine(&ws, &log, true);
+        let input = write_call(1, &ws.join("notes.txt"), "password=hunter2");
+        run_session(&engine, input).await;
+        let logged = fs::read_to_string(&log).expect("allowed call was not logged");
+        assert!(logged.contains("ALLOWED"), "allowed call was not logged");
+        assert!(
+            logged.contains("notes.txt"),
+            "audit log no longer says which file was touched"
+        );
+        assert!(
+            !logged.contains("hunter2"),
+            "secret from an allowed call was written to the audit log"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn audit_log_not_readable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let (ws, outside) = setup("audit-perms");
+        let log = outside.join("audit.log");
+        let engine = logging_engine(&ws, &log, false);
+        run_session(&engine, write_call(1, &ws.join(".env"), "x")).await;
+        let mode = fs::metadata(&log).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "audit log is readable by other users");
     }
 
     fn write_config(name: &str, body: &str) -> PathBuf {

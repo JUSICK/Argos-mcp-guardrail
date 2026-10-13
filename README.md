@@ -20,7 +20,7 @@
 - **Path Traversal Sandboxing:** Enforces strict workspace boundaries via OS path canonicalization and `../` stripping.
 - **Secret & Sensitive File Shield:** Block access to `.env`, private keys (`id_rsa`, `id_ed25519`), and cloud credentials.
 - **Destructive Command Blocker:** Intercepts dangerous terminal commands (`rm -rf`, disk formatters, fork bombs).
-- **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`argos-audit.log`) without cloud telemetry.
+- **Local Audit Logging:** Records blocked and allowed actions into a structured, JSON-lines log (`argos-audit.log`) without cloud telemetry. Only file paths are logged; every other argument value (file contents, commands) is replaced with `[REDACTED]`. On macOS/Linux the log is created readable only by its owner; on Windows it inherits the permissions of the folder it is in.
 - **Flexible Configuration:** Declarative rule customization via `argos.toml`.
 - **Your Own Local & Private Tool**: Built entirely in Rust as a self-contained, ~1 MB single binary with zero external telemetry or cloud dependencies. Argos relies strictly on deterministic pattern matching, native OS primitives, and JSON-RPC stream interception—ensuring your sensitive code, configuration keys, and audit trails never leave your local machine.
 ---
