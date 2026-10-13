@@ -29,7 +29,7 @@
 
 ### 1. Installation
 
-#### Option A: Pre-built Binaries (Windows & Linux)
+#### Option A: Pre-built Binaries (Windows, Linux & macOS)
 Download the latest pre-compiled binary for your system from the [Releases](https://github.com/JUSICK/Argos-mcp-guardrail/releases) page:
 * **Windows**: Download `argos.exe` (or unpack `argos-windows-x86_64.zip`).
 * **Linux**: Download and extract `argos-linux-x86_64.tar.gz`:
@@ -37,8 +37,13 @@ Download the latest pre-compiled binary for your system from the [Releases](http
   tar -xvf argos-linux-x86_64.tar.gz
   chmod +x argos
   ```
-#### Option B: Build from Source (macOS, or any platform)
-If you are running **macOS** (Apple Silicon / Intel) or prefer compiling locally:
+* **macOS** (Apple Silicon & Intel): Download and extract `argos-macos-universal.tar.gz`. The binary is not signed by Apple, so remove the download quarantine once before the first run:
+  ```bash
+  tar -xvf argos-macos-universal.tar.gz
+  xattr -d com.apple.quarantine argos
+  ```
+#### Option B: Build from Source (any platform)
+If you prefer compiling locally:
   ```bash
   git clone https://github.com/JUSICK/Argos-mcp-guardrail.git
   cd Argos-mcp-guardrail

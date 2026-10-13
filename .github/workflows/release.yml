@@ -1,0 +1,62 @@
+name: macOS Release
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the macOS build to (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Run Tests
+        run: cargo test
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Package universal binary
+        run: |
+          mkdir dist
+          lipo -create -output dist/argos \
+            target/aarch64-apple-darwin/release/argos \
+            target/x86_64-apple-darwin/release/argos
+          lipo -info dist/argos
+          dist/argos 2>&1 | head -1 || true
+          cp argos.toml dist/
+          tar -czf argos-macos-universal.tar.gz -C dist argos argos.toml
+          tar -tvzf argos-macos-universal.tar.gz
+
+      - name: Upload to release
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "Draft created by the macOS release workflow."
+          fi
+          gh release upload "$TAG" argos-macos-universal.tar.gz --clobber
+          mkdir -p sums
+          gh release download "$TAG" --pattern SHA256SUMS.txt --dir sums || true
+          touch sums/SHA256SUMS.txt
+          grep -v ' argos-macos-universal.tar.gz$' sums/SHA256SUMS.txt > SHA256SUMS.txt || true
+          shasum -a 256 argos-macos-universal.tar.gz >> SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --clobber
