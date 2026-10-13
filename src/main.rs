@@ -236,6 +236,26 @@ impl SecurityEngine {
         }
     }
 
+    // Returns the first blocked pattern found in `text`. Allow-listed names
+    // (e.g. `.env.example`) are blanked out first, so they only exempt
+    // themselves: an `id_rsa` or `.ssh` elsewhere in the text still counts.
+    // They're replaced with `\0` rather than removed, so the pieces on either
+    // side can't join up into a new match.
+    fn find_blocked_pattern(&self, text: &str) -> Option<&str> {
+        let filesystem = &self.config.filesystem;
+        let mut remaining = text.to_string();
+        // An empty allowed pattern would "match" between every character and
+        // scramble the text, so it's skipped.
+        for allowed in filesystem.allowed_patterns.iter().filter(|a| !a.is_empty()) {
+            remaining = remaining.replace(allowed.as_str(), "\0");
+        }
+        filesystem
+            .blocked_patterns
+            .iter()
+            .map(String::as_str)
+            .find(|pattern| remaining.contains(pattern))
+    }
+
     fn inspect_tool_call(&self, tool_name: &str, args: &Option<Value>) -> PolicyDecision {
         let args_str = match args {
             Some(v) => v.to_string(),
@@ -283,40 +303,18 @@ impl SecurityEngine {
                     }
                 }
 
-                let is_explicitly_allowed = self
-                    .config
-                    .filesystem
-                    .allowed_patterns
-                    .iter()
-                    .any(|allowed| clean_candidate.contains(allowed));
-
-                if !is_explicitly_allowed {
-                    for pattern in &self.config.filesystem.blocked_patterns {
-                        if clean_candidate.contains(pattern) {
-                            return PolicyDecision::Block(format!(
-                                "Resolved target matches prohibited pattern '{pattern}'"
-                            ));
-                        }
-                    }
+                if let Some(pattern) = self.find_blocked_pattern(clean_candidate) {
+                    return PolicyDecision::Block(format!(
+                        "Resolved target matches prohibited pattern '{pattern}'"
+                    ));
                 }
             }
         }
 
-        let is_explicitly_allowed = self
-            .config
-            .filesystem
-            .allowed_patterns
-            .iter()
-            .any(|allowed| args_str.contains(allowed));
-
-        if !is_explicitly_allowed {
-            for pattern in &self.config.filesystem.blocked_patterns {
-                if args_str.contains(pattern) {
-                    return PolicyDecision::Block(format!(
-                        "Argument payload contains prohibited pattern '{pattern}'"
-                    ));
-                }
-            }
+        if let Some(pattern) = self.find_blocked_pattern(&args_str) {
+            return PolicyDecision::Block(format!(
+                "Argument payload contains prohibited pattern '{pattern}'"
+            ));
         }
 
         if tool_name == "execute_command" || tool_name == "bash" || tool_name == "sh" {
@@ -504,4 +502,197 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = child.kill().await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Each test gets its own fresh folder under the system temp dir:
+    //   <temp>/argos-test-<name>/workspace   <- what Argos protects
+    //   <temp>/argos-test-<name>/outside     <- somewhere the agent must not reach
+    fn setup(name: &str) -> (PathBuf, PathBuf) {
+        let base = env::temp_dir().join(format!("argos-test-{name}"));
+        let _ = fs::remove_dir_all(&base);
+        let workspace = base.join("workspace");
+        let outside = base.join("outside");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        (workspace, outside)
+    }
+
+    fn check(workspace: &Path, tool: &str, path: &Path) -> bool {
+        let engine = SecurityEngine::new(AppConfig::default(), workspace.to_path_buf());
+        let args = Some(json!({ "path": path.to_string_lossy(), "content": "x" }));
+        matches!(
+            engine.inspect_tool_call(tool, &args),
+            PolicyDecision::Block(_)
+        )
+    }
+
+    // Like `check`, but with any tool name and any arguments (e.g. move_file,
+    // which uses `source`/`destination` instead of `path`).
+    fn check_args(workspace: &Path, tool: &str, args: Value) -> bool {
+        let engine = SecurityEngine::new(AppConfig::default(), workspace.to_path_buf());
+        matches!(
+            engine.inspect_tool_call(tool, &Some(args)),
+            PolicyDecision::Block(_)
+        )
+    }
+
+    // Makes `link` point at the existing folder `target`. On Windows this is a
+    // junction, which (unlike a symlink) needs no admin rights or Developer Mode.
+    fn link_dir(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "failed to create junction");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    // Case 1: new file outside the workspace, given as a full path.
+    #[test]
+    fn blocks_new_file_outside_workspace() {
+        let (ws, outside) = setup("case1");
+        let target = outside.join("evil.ps1");
+        assert!(
+            check(&ws, "write_file", &target),
+            "new file outside workspace was allowed"
+        );
+    }
+
+    // Case 2: new file written through a link inside the workspace that
+    // points at a sensitive folder outside it.
+    #[test]
+    fn blocks_new_file_through_link_to_sensitive_dir() {
+        let (ws, outside) = setup("case2");
+        let ssh = outside.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        let link = ws.join("keys");
+        link_dir(&ssh, &link);
+        let target = link.join("authorized_keys");
+        assert!(
+            check(&ws, "write_file", &target),
+            "new file through link to .ssh was allowed"
+        );
+    }
+
+    // Case 3: new file directly inside the workspace.
+    #[test]
+    fn allows_new_file_in_workspace() {
+        let (ws, _) = setup("case3");
+        let target = ws.join("notes.txt");
+        assert!(
+            !check(&ws, "write_file", &target),
+            "new file in workspace was blocked"
+        );
+    }
+
+    // Case 4: new file in a subfolder that doesn't exist yet, inside the workspace.
+    #[test]
+    fn allows_new_file_in_new_subfolder() {
+        let (ws, _) = setup("case4");
+        let target = ws.join("src").join("new").join("lib.rs");
+        assert!(
+            !check(&ws, "write_file", &target),
+            "new file in new subfolder was blocked"
+        );
+    }
+
+    // Case 5: new .env file inside the workspace.
+    #[test]
+    fn blocks_new_env_file_in_workspace() {
+        let (ws, _) = setup("case5");
+        let target = ws.join(".env");
+        assert!(
+            check(&ws, "write_file", &target),
+            "new .env file was allowed"
+        );
+    }
+
+    // Case 6: reading an existing ordinary file inside the workspace.
+    #[test]
+    fn allows_reading_existing_file() {
+        let (ws, _) = setup("case6");
+        let target = ws.join("readme.txt");
+        fs::write(&target, "hello").unwrap();
+        assert!(
+            !check(&ws, "read_file", &target),
+            "reading existing file was blocked"
+        );
+    }
+
+    // Case 1a: a folder whose name merely contains `.env.example` must not
+    // switch off the `id_rsa` check for files inside it.
+    #[test]
+    fn blocks_key_inside_folder_named_like_allowed_pattern() {
+        let (ws, _) = setup("case1a");
+        let target = ws.join(".env.example-old").join("id_rsa");
+        assert!(
+            check(&ws, "write_file", &target),
+            "id_rsa inside '.env.example-old' folder was allowed"
+        );
+    }
+
+    // Case 1b: same trick with `.env.sample` hiding a `.ssh` folder.
+    #[test]
+    fn blocks_ssh_inside_folder_named_like_allowed_pattern() {
+        let (ws, _) = setup("case1b");
+        let target = ws.join(".env.sample").join(".ssh").join("authorized_keys");
+        assert!(
+            check(&ws, "write_file", &target),
+            ".ssh inside '.env.sample' folder was allowed"
+        );
+    }
+
+    // Case 1c: moving a private key onto an allow-listed name. move_file has
+    // no `path` key, so only the argument-payload check stands in the way.
+    #[test]
+    fn blocks_moving_key_to_allowed_name() {
+        let (ws, _) = setup("case1c");
+        let source = ws.join(".ssh").join("id_rsa");
+        let destination = ws.join(".env.example");
+        let args = json!({
+            "source": source.to_string_lossy(),
+            "destination": destination.to_string_lossy(),
+        });
+        assert!(
+            check_args(&ws, "move_file", args),
+            "moving id_rsa to .env.example was allowed"
+        );
+    }
+
+    // Case 1d: the allow-list still does its real job.
+    #[test]
+    fn allows_env_example_file() {
+        let (ws, _) = setup("case1d");
+        let target = ws.join(".env.example");
+        assert!(
+            !check(&ws, "write_file", &target),
+            ".env.example was blocked"
+        );
+    }
+
+    // Case 1e: an ordinary file whose text mentions `.env.example`.
+    #[test]
+    fn allows_ordinary_file_mentioning_env_example() {
+        let (ws, _) = setup("case1e");
+        let args = json!({
+            "path": ws.join("notes.txt").to_string_lossy(),
+            "content": "Copy .env.example before running.",
+        });
+        assert!(
+            !check_args(&ws, "write_file", args),
+            "notes.txt mentioning .env.example was blocked"
+        );
+    }
 }
