@@ -333,10 +333,7 @@ impl SecurityEngine {
             let Ok(can_root) = self.workspace_root.canonicalize() else {
                 return Some("Could not resolve workspace root".into());
             };
-            let root_str = can_root.to_string_lossy();
-            let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
-
-            if !clean_candidate.starts_with(clean_root) {
+            if !can_candidate.starts_with(&can_root) {
                 return Some(format!(
                     "Resolved target path escapes workspace boundary: {clean_candidate}"
                 ));
@@ -636,6 +633,26 @@ mod tests {
         assert!(
             check(&ws, "write_file", &target),
             "new file outside workspace was allowed"
+        );
+    }
+
+    #[test]
+    fn blocks_sibling_dir_sharing_workspace_prefix() {
+        let (ws, _) = setup("sibling-prefix");
+        let sibling = ws.with_file_name("workspace-evil");
+        fs::create_dir_all(&sibling).unwrap();
+        assert!(
+            check(&ws, "write_file", &sibling.join("x.txt")),
+            "file in sibling dir sharing the workspace name prefix was allowed"
+        );
+    }
+
+    #[test]
+    fn allows_workspace_root_itself() {
+        let (ws, _) = setup("root-itself");
+        assert!(
+            !check(&ws, "list_directory", &ws),
+            "the workspace root itself was blocked"
         );
     }
 
