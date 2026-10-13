@@ -40,7 +40,7 @@ Download the latest pre-compiled binary for your system from the [Releases](http
 #### Option B: Build from Source (macOS, or any platform)
 If you are running **macOS** (Apple Silicon / Intel) or prefer compiling locally:
   ```bash
-  git clone [https://github.com/JUSICK/Argos-mcp-guardrail.git](https://github.com/JUSICK/Argos-mcp-guardrail.git)
+  git clone https://github.com/JUSICK/Argos-mcp-guardrail.git
   cd Argos-mcp-guardrail
   cargo build --release
   ```
