@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use tokio::fs::OpenOptions;
 use tokio::io::{self, AsyncWriteExt};
@@ -194,6 +194,35 @@ enum PolicyDecision {
     Block(String),
 }
 
+// Work out where `raw` really points, even if the file doesn't exist yet.
+// `canonicalize()` only works on paths that exist, so walk up to the nearest
+// existing folder, canonicalize that (resolving symlinks/junctions), then put
+// the not-yet-existing names back on. Returns None if that's not possible,
+// e.g. a `..` in the missing part, and the caller then blocks.
+fn resolve_path(raw: &Path) -> Option<PathBuf> {
+    let absolute = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        env::current_dir().ok()?.join(raw)
+    };
+    let mut existing = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            let mut resolved = real;
+            for name in missing.iter().rev() {
+                resolved.push(name);
+            }
+            return Some(resolved);
+        }
+        match existing.components().next_back()? {
+            Component::Normal(name) => missing.push(name),
+            _ => return None,
+        }
+        existing = existing.parent()?;
+    }
+}
+
 struct SecurityEngine {
     config: AppConfig,
     workspace_root: PathBuf,
@@ -230,37 +259,43 @@ impl SecurityEngine {
 
                 let candidate = PathBuf::from(path_val);
 
-                if let Ok(can_candidate) = candidate.canonicalize() {
-                    let cand_str = can_candidate.to_string_lossy();
-                    let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
+                // Fail closed: if we can't work out where the path really points,
+                // we can't check it, so it doesn't go through.
+                let Some(can_candidate) = resolve_path(&candidate) else {
+                    return PolicyDecision::Block(format!(
+                        "Could not resolve target path: {path_val}"
+                    ));
+                };
+                let cand_str = can_candidate.to_string_lossy();
+                let clean_candidate = cand_str.strip_prefix(r"\\?\").unwrap_or(&cand_str);
 
-                    if self.config.filesystem.block_path_traversal {
-                        if let Ok(can_root) = self.workspace_root.canonicalize() {
-                            let root_str = can_root.to_string_lossy();
-                            let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
+                if self.config.filesystem.block_path_traversal {
+                    let Ok(can_root) = self.workspace_root.canonicalize() else {
+                        return PolicyDecision::Block("Could not resolve workspace root".into());
+                    };
+                    let root_str = can_root.to_string_lossy();
+                    let clean_root = root_str.strip_prefix(r"\\?\").unwrap_or(&root_str);
 
-                            if !clean_candidate.starts_with(clean_root) {
-                                return PolicyDecision::Block(format!(
-                                    "Resolved target path escapes workspace boundary: {clean_candidate}"
-                                ));
-                            }
-                        }
+                    if !clean_candidate.starts_with(clean_root) {
+                        return PolicyDecision::Block(format!(
+                            "Resolved target path escapes workspace boundary: {clean_candidate}"
+                        ));
                     }
+                }
 
-                    let is_explicitly_allowed = self
-                        .config
-                        .filesystem
-                        .allowed_patterns
-                        .iter()
-                        .any(|allowed| clean_candidate.contains(allowed));
+                let is_explicitly_allowed = self
+                    .config
+                    .filesystem
+                    .allowed_patterns
+                    .iter()
+                    .any(|allowed| clean_candidate.contains(allowed));
 
-                    if !is_explicitly_allowed {
-                        for pattern in &self.config.filesystem.blocked_patterns {
-                            if clean_candidate.contains(pattern) {
-                                return PolicyDecision::Block(format!(
-                                    "Resolved target matches prohibited pattern '{pattern}'"
-                                ));
-                            }
+                if !is_explicitly_allowed {
+                    for pattern in &self.config.filesystem.blocked_patterns {
+                        if clean_candidate.contains(pattern) {
+                            return PolicyDecision::Block(format!(
+                                "Resolved target matches prohibited pattern '{pattern}'"
+                            ));
                         }
                     }
                 }
@@ -326,10 +361,6 @@ impl SecurityEngine {
     }
 }
 
-// On Windows, resolve the program to a full path using PATH + PATHEXT so it can be
-// spawned directly. This avoids `cmd /c`, where cmd.exe would interpret metacharacters
-// in the args. `.cmd`/`.bat` targets still go through cmd internally, but Rust's std
-// rejects arguments it can't escape safely for those, instead of passing them through.
 fn resolve_program(program: &str) -> String {
     if !cfg!(windows) {
         return program.to_string();
