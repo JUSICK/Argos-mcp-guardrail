@@ -1,4 +1,5 @@
 # Argos
+[![CI](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml/badge.svg)](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml)
 
 Argos sits between an MCP client (Claude Desktop, Cursor) and an MCP server.
 It reads every `tools/call` request and refuses the ones that reach outside
