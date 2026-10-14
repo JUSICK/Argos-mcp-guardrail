@@ -7,7 +7,7 @@ your workspace, touch secrets like `.env` or SSH keys, or run commands like
 
 It's a single binary with no network access, configured by one TOML file.
 
-<img width="1734" height="875" alt="Argos blocking a tool call in Claude Desktop" src="https://github.com/user-attachments/assets/3554e752-14a8-4893-b7af-f4f81800e170" />
+<img width="1280" height="720" alt="Argos blocking a tool call in Claude Desktop (1)" src="https://github.com/user-attachments/assets/10678636-84ee-4a1a-bd2c-ce049e1d956c" />
 
 ## What it blocks
 
