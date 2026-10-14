@@ -1586,4 +1586,72 @@ mod tests {
         let args = json!({ "command": "ls\t-la" });
         assert!(!check_args(&ws, "bash", args), "ls with a tab was blocked");
     }
+
+    // Benchmark: how long the policy check takes per tools/call request.
+    // Ignored by default. Run it with:
+    //   cargo test --release bench_ -- --ignored --nocapture
+    fn time_inspections(engine: &SecurityEngine, tool: &str, args: &Option<Value>) -> String {
+        const WARMUP: usize = 2_000;
+        const RUNS: usize = 20_000;
+        for _ in 0..WARMUP {
+            std::hint::black_box(engine.inspect_tool_call(tool, args));
+        }
+        let mut micros: Vec<f64> = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            let start = std::time::Instant::now();
+            std::hint::black_box(engine.inspect_tool_call(tool, args));
+            micros.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+        }
+        micros.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mean = micros.iter().sum::<f64>() / RUNS as f64;
+        format!(
+            "mean {mean:>7.1} us | p50 {:>7.1} us | p99 {:>7.1} us | max {:>8.1} us",
+            micros[RUNS / 2],
+            micros[RUNS * 99 / 100],
+            micros[RUNS - 1],
+        )
+    }
+
+    #[test]
+    #[ignore = "benchmark; run with --release --ignored --nocapture"]
+    fn bench_inspect_tool_call() {
+        let (ws, _) = setup("bench");
+        let file = ws.join("notes.txt");
+        fs::write(&file, "hello").unwrap();
+        let engine = SecurityEngine::new(AppConfig::default(), ws.clone());
+
+        let cases: Vec<(&str, &str, Value)> = vec![
+            (
+                "allowed: read_file in workspace",
+                "read_file",
+                json!({ "path": file.to_string_lossy() }),
+            ),
+            (
+                "allowed: write_file, 100 KiB content",
+                "write_file",
+                json!({ "path": file.to_string_lossy(), "content": "A".repeat(100 * 1024) }),
+            ),
+            (
+                "blocked: read .env",
+                "read_file",
+                json!({ "path": ws.join(".env").to_string_lossy() }),
+            ),
+            (
+                "blocked: path outside workspace",
+                "read_file",
+                json!({ "path": "/etc/passwd" }),
+            ),
+            (
+                "blocked: rm -rf in shell tool",
+                "bash",
+                json!({ "command": "rm -rf /" }),
+            ),
+        ];
+
+        println!("\nArgos policy check, {} runs per case", 20_000);
+        for (label, tool, args) in cases {
+            let line = time_inspections(&engine, tool, &Some(args));
+            println!("{label:<40} {line}");
+        }
+    }
 }

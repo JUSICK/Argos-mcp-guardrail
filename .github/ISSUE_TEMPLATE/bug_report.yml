@@ -1,0 +1,39 @@
+name: Bug report
+description: Something doesn't work as the README says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a tool call got past Argos when it shouldn't have, please
+        [report it privately](https://github.com/JUSICK/Argos-mcp-guardrail/security/advisories/new)
+        instead. Everything else belongs here.
+  - type: input
+    id: version
+    attributes:
+      label: Argos version and OS
+      placeholder: "0.2.1, Windows 11"
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and MCP server
+      placeholder: "Claude Desktop + @modelcontextprotocol/server-filesystem"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Your argos.toml and the args you pass to Argos
+      render: toml
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant lines from argos-audit.log or the client's MCP log
+      description: Values other than paths are already redacted in the audit log.
+      render: shell
