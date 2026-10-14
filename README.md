@@ -9,6 +9,23 @@ It's a single binary with no network access, configured by one TOML file.
 
 <img width="1280" height="720" alt="Argos blocking a tool call in Claude Desktop (1)" src="https://github.com/user-attachments/assets/10678636-84ee-4a1a-bd2c-ce049e1d956c" />
 
+## Why
+
+An AI agent with file and shell access works with whatever you point it at,
+and it does what the text in front of it says. That text isn't always yours:
+a README in a cloned repo, a web page it fetched, or a comment in a
+dependency can contain instructions the agent follows as if you'd typed them.
+A mistaken command works just as well, and `rm -rf` in the wrong folder
+doesn't care who wrote it.
+
+Most MCP servers trust the client completely. A filesystem server will read
+`~/.ssh/id_rsa` for anyone who asks, and nothing in the protocol stops it.
+
+Argos adds a small check in the one place every tool call passes through. It
+doesn't try to understand what the agent is "thinking". It looks at the
+arguments and applies rules you wrote, so it behaves the same way every
+time, adds well under a millisecond, and has nothing to send over a network.
+
 ## What it blocks
 
 - **Paths outside the workspace.** Paths are resolved before they're
@@ -24,10 +41,36 @@ It's a single binary with no network access, configured by one TOML file.
 A blocked call never reaches the server. The client gets a tool result with
 `isError: true` that says what rule it hit.
 
-This is pattern matching, not a sandbox. It keeps an agent from wandering
-into places it shouldn't, but a command can always be phrased in a way the
-patterns don't catch, and it does nothing about a server that is itself
-malicious.
+## Limitations
+
+Argos is a guardrail, not a sandbox. Know what it doesn't cover before you
+rely on it.
+
+- **It only sees the MCP servers it wraps.** Anything the client does
+  without going through a wrapped server never reaches Argos. That includes
+  the client's own built-in tools, such as the shell and file tools in
+  Claude Desktop (for example `device_bash`), Claude Code's built-in
+  Bash/Read/Edit tools, and Cursor's native file and terminal access, as
+  well as any other MCP server you haven't put behind Argos. To get the
+  protection you want, wrap every server that can touch your files or run
+  commands, and turn off or restrict the built-in tools that overlap. Check
+  `argos-audit.log` if you're unsure whether a call went through it.
+- **It matches patterns.** A command can be written in a way the patterns
+  don't catch (`rm -r -f`, a script that deletes files, a different tool for
+  the same job). Add what you need to `blocked_commands`, but don't treat the
+  list as complete.
+- **It checks arguments, not what a tool does.** If a tool reads a file
+  without a path argument Argos recognises (see `path_keys`), or a server
+  decides on its own to open something, Argos can't tell.
+- **A malicious server is out of scope.** Argos inspects requests, not
+  replies, and it doesn't stop a server from doing harm on its own.
+- **It runs with your permissions.** It doesn't isolate processes, limit
+  network access for the wrapped server, or contain a compromised machine.
+  For strong isolation, run the agent in a container or VM and use Argos as
+  an extra layer inside it.
+
+If you find a way around a rule, please open an issue. Bypasses are the most
+useful bug reports this project can get.
 
 ## Install
 
