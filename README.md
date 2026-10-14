@@ -188,12 +188,7 @@ gets the permissions of the folder it's in.
 
 ## How it works
 
-```
-MCP client  <── stdin/stdout ──>  argos  <── stdin/stdout ──>  MCP server
-                                    │
-                         blocked: reply to the client
-                         and write the audit log
-```
+<img width="2425" height="1143" alt="image" src="https://github.com/user-attachments/assets/536e24d5-ef65-43a0-bbd7-c1d8b7eb7f6d" />
 
 Argos starts the server as a child process and relays its stdin and stdout
 line by line. Only `tools/call` requests are inspected; everything else,
