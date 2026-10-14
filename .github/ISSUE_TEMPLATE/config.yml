@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a bypass or vulnerability (private)
+    url: https://github.com/JUSICK/Argos-mcp-guardrail/security/advisories/new
+    about: A tool call that gets past Argos when it shouldn't. Please don't post these publicly.
