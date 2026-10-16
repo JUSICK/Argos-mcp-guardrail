@@ -1,4 +1,5 @@
 # Argos
+[![Argos-mcp-guardrail MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/JUSICK/Argos-mcp-guardrail/badges/card.svg)](https://glama.ai/mcp/servers/JUSICK/Argos-mcp-guardrail)
 [![CI](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml/badge.svg)](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml)
 
 Argos sits between an MCP client (Claude Desktop, Cursor) and an MCP server.
