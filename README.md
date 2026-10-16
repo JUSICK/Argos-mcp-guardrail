@@ -1,6 +1,7 @@
 # Argos
 [![Argos-mcp-guardrail MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/JUSICK/Argos-mcp-guardrail/badges/card.svg)](https://glama.ai/mcp/servers/JUSICK/Argos-mcp-guardrail)
-[![CI](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml/badge.svg)](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml)
+
+[![CI](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml/badge.svg)](https://github.com/JUSICK/Argos-mcp-guardrail/actions/workflows/ci.yml) [![GitHub Release](https://img.shields.io/github/v/release/JUSICK/Argos-mcp-guardrail?display_name=release)](https://github.com/JUSICK/Argos-mcp-guardrail/releases/latest) [![License](https://img.shields.io/github/license/JUSICK/Argos-mcp-guardrail)](LICENSE)
 
 Argos sits between an MCP client (Claude Desktop, Cursor) and an MCP server.
 It reads every `tools/call` request and refuses the ones that reach outside
